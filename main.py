@@ -12,6 +12,7 @@ from tray_icon import AppTrayIcon
 from audio_recorder import AudioRecorder
 from translator_engine import TranslationWorker, TranslatorEngine
 from system_handler import SystemHandler
+from update_manager import UpdateManager
 
 try:
     import tts_worker
@@ -63,6 +64,9 @@ class AppController(QObject):
 
     def _deferred_init(self):
         """Second phase of loading: create background windows and start engines"""
+        # 0. Check for updates (Async)
+        QTimer.singleShot(2000, lambda: UpdateManager.check_for_updates(self.window))
+
         # Create windows that weren't created yet
         if not self.asr_window: self.asr_window = ASRModeWindow()
         if not self.asr_jp_window: self.asr_jp_window = ASRJpModeWindow()

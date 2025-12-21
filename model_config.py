@@ -99,9 +99,10 @@ class ModelConfig:
     ASR_MODELS: Dict[str, ModelInfo] = {
         ASREngineType.SENSEVOICE_ONNX.value: ModelInfo(
             name="SenseVoice-Sherpa (ONNX/标点支持)", 
-            path="sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
+            path="sensevoice_v1.zip",
             engine_type=ASREngineType.SENSEVOICE_ONNX.value,
             loader="sherpa_onnx",
+            is_zip=True,
             available=True
         ),
         ASREngineType.SENSEVOICE_PYTORCH.value: ModelInfo(
@@ -123,7 +124,7 @@ class ModelConfig:
         ),
         TranslatorEngineType.NLLB_600M_CT2.value: ModelInfo(
             name="NLLB-200 600M (标准)",
-            path="nllb-200_600M_int8_ct2.zip",
+            path="nllb_600m_v1.zip",
             engine_type=TranslatorEngineType.NLLB_600M_CT2.value,
             loader="ctranslate2",
             is_zip=True

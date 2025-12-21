@@ -42,12 +42,10 @@ MODELS = {
         description="阿里达摩院开源的多语言语音识别模型，支持中日英韩粤语",
         size_mb=156,
         required=True,
-        target_dir="sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
+        target_dir="sensevoice_v1",
         mirrors=[
-            # HuggingFace 镜像站（中国可访问）
-            "https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx",
-            # 官方 HuggingFace
-            "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx",
+            "https://hf-mirror.com/nakamotosai/ai-jp-input-asr/resolve/main/sensevoice_v1.zip",
+            "https://huggingface.co/nakamotosai/ai-jp-input-asr/resolve/main/sensevoice_v1.zip",
         ]
     ),
     "nllb_600m": ModelInfo(
@@ -56,8 +54,11 @@ MODELS = {
         description="Meta开源的多语言翻译模型，支持离线中日翻译",
         size_mb=578,
         required=False,
-        target_dir="nllb-200_600M_int8_ct2",
-        mirrors=[]
+        target_dir="nllb_600m_v1",
+        mirrors=[
+            "https://hf-mirror.com/nakamotosai/ai-jp-input-nllb/resolve/main/nllb_600m_v1.zip",
+            "https://huggingface.co/nakamotosai/ai-jp-input-nllb/resolve/main/nllb_600m_v1.zip",
+        ]
     ),
     "nllb_1_2b": ModelInfo(
         id="nllb_1_2b",
