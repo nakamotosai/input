@@ -23,7 +23,7 @@ class SetupWizard(QDialog):
         self._setup_ui()
         
     def _setup_ui(self):
-        self.setWindowTitle("AI 日语输入法 - 初始化向导")
+        self.setWindowTitle("中日说 - 初始化向导")
         self.setFixedSize(600, 500)
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowTitleHint | Qt.WindowType.CustomizeWindowHint)
         
@@ -93,7 +93,7 @@ class SetupWizard(QDialog):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(40, 40, 40, 40)
         
-        title = QLabel("欢迎使用 AI 日语输入法")
+        title = QLabel("欢迎使用 中日说")
         title.setStyleSheet("font-size: 28px; font-weight: bold; color: white; margin-bottom: 20px;")
         
         desc = QLabel(
@@ -132,10 +132,9 @@ class SetupWizard(QDialog):
             "SenseVoice 语音识别模型 (必需)", 
             "高性能多语言识别模型 (约156MB)"
         )
-        # 禁用取消选中，因为是必需的
         self.asr_model.btn.setCheckable(False)
         self.asr_model.update_theme(False) # Dark mode
-        # 监听状态变化以启用/禁用下一步按钮
+        # 监听状态变化：当模型下载并解压成功后，ModelOptionWidget 会发射 selected 信号
         self.asr_model.selected.connect(self._check_model_ready)
         
         layout.addWidget(self.asr_model)

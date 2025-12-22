@@ -2,5 +2,5 @@
     "latest_version": "1.0.0",
     "release_date": "2025-12-21",
     "download_url": "https://github.com/caisiyang/input/releases/latest",
-    "changelog": "1. 初始版本发布\n2. 集成 ASR 与翻译功能\n3. 支持在线/离线模型自动下载"
+    "changelog": "1. 初始版本发布 (中日说 v1.0.0)\n2. 集成 ASR 与翻译功能\n3. 支持在线/离线模型自动下载"
 }

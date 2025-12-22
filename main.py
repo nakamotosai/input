@@ -13,6 +13,8 @@ from audio_recorder import AudioRecorder
 from translator_engine import TranslationWorker, TranslatorEngine
 from system_handler import SystemHandler
 from update_manager import UpdateManager
+from settings_window import SettingsWindow
+from ui_components import TeachingTip
 
 try:
     import tts_worker
@@ -29,6 +31,7 @@ class AppController(QObject):
         self.m_cfg = get_model_config()
         self._last_engine_id = self.m_cfg.current_translator_engine # 记录上一次的引擎ID
         self._settings_window = None  # 设置窗口引用
+        self._is_translating = False # 翻译状态标志
         
         # 1. Models & Managers
         self.asr_manager = ASRManager()
@@ -61,6 +64,15 @@ class AppController(QObject):
         
         # 3. Deferred initialization for high performance
         QTimer.singleShot(50, self._deferred_init)
+        
+        # 4. First-time Teaching Tip
+        if not self.m_cfg.tip_shown:
+            QTimer.singleShot(1500, self._show_teaching_tip)
+
+    def _show_teaching_tip(self):
+        self.tip = TeachingTip()
+        self.tip.show_beside(self.window)
+        self.m_cfg.tip_shown = True # Mark as shown
 
     def _deferred_init(self):
         """Second phase of loading: create background windows and start engines"""
@@ -96,6 +108,12 @@ class AppController(QObject):
         self.tray.activated.connect(self.on_tray_activated)
         for win in self.all_windows:
             self._connect_win_signals(win)
+            # 注册所有窗口句柄，确保焦点追踪能正确排除它们
+            self.sys_handler.add_my_window_handle(int(win.winId()))
+        
+        # 启动焦点追踪和热键监听（在窗口注册完成后）
+        self.sys_handler.start_focus_tracking()
+        self.hotkey_mgr.start()
             
         if hasattr(self.tr_window, 'requestTranslation'):
             self.tr_window.requestTranslation.connect(self.handle_translation_request)
@@ -123,8 +141,8 @@ class AppController(QObject):
 
     def _connect_win_signals(self, win):
         win.requestSend.connect(self.handle_send_request)
-        win.requestRecordStart.connect(self.on_record_pressed)
-        win.requestRecordStop.connect(self.audio_recorder.stop_recording)
+        win.requestRecordStart.connect(self.on_asr_down)
+        win.requestRecordStop.connect(self.on_asr_up)
         
         if hasattr(win, "requestAppModeChange"): win.requestAppModeChange.connect(self.handle_mode_change)
         if hasattr(win, "requestASREngineChange"): win.requestASREngineChange.connect(self.handle_asr_engine_change)
@@ -141,11 +159,10 @@ class AppController(QObject):
         if hasattr(win, "requestPersonalityChange"): win.requestPersonalityChange.connect(self.handle_personality_change)
         if hasattr(win, "requestHotkeyChange"): win.requestHotkeyChange.connect(self.handle_hotkey_change)
         if hasattr(win, "requestOpenSettings"): win.requestOpenSettings.connect(self.open_settings)
-
-        if self.window:
-            self.sys_handler.set_my_window_handle(int(self.window.winId()))
-        self.sys_handler.start_focus_tracking()
-        self.hotkey_mgr.start()
+        
+        # 中日双显模式特有信号
+        if hasattr(win, "sigTranslationStarted"):
+            win.sigTranslationStarted.connect(self.on_translation_started)
 
         self._caps_was_on = False
         self.handle_mode_change(self.app_mode) # Refresh state
@@ -170,21 +187,42 @@ class AppController(QObject):
         self.m_cfg.app_mode = mode_id # 这会自动触发 save_config
 
     def on_asr_down(self):
+        # 录音开始时不强制抢占焦点，防止干扰按钮的鼠标释放事件
         self.window.update_recording_status(True)
         self.audio_recorder.start_recording()
 
     def on_asr_up(self):
         self.window.update_recording_status(False)
         self.audio_recorder.stop_recording()
+        
+        # 中日双显模式：录音结束后保持窗口焦点
+        if self.app_mode == "translation":
+            self.window.activateWindow()
+            self.window.raise_()
+            if hasattr(self.window, "focus_input"):
+                self.window.focus_input()
 
     def toggle_main_ui(self):
         is_visible = self.window.isVisible()
         if is_visible:
             for win in self.all_windows: win.hide()
         else:
+            # 确保窗口从任何状态恢复（包括最小化）并置顶
             self.window.show()
-            self.window.activateWindow()
+            self.window.showNormal() 
             self.window.raise_()
+            self.window.activateWindow()
+            
+            # 针对 Windows 的强力激活：解决显示后点击不响应的问题
+            if sys.platform == "win32":
+                try:
+                    import ctypes
+                    # 尝试设置前台窗口
+                    hwnd = int(self.window.winId())
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+                except:
+                    pass
+
             if hasattr(self.window, "focus_input"):
                 self.window.focus_input()
 
@@ -196,45 +234,101 @@ class AppController(QObject):
         elif self.app_mode == "asr_jp":
              self.handle_translation_request(result)
 
+    def on_translation_started(self):
+        """当用户开始在中日双显模式输入时调用"""
+        self._is_translating = True
+
     def handle_translation_request(self, text):
+        # 新翻译请求时重置TTS记录，确保新文本可以播放
+        if hasattr(self, '_last_tts_text') and self._last_tts_text != text:
+            self._last_tts_text = None
+        
+        self._is_translating = True # 标记正在翻译
         self.sig_do_translate.emit(text)
 
     def on_translation_finished(self, text):
+        self._is_translating = False # 翻译结束
         if not text: return
         
         if self.app_mode == "translation":
             self.tr_window.on_translation_ready(text)
+            # 中日双显模式：自动复制日文到剪贴板
+            self.sys_handler.copy_to_clipboard(text)
         elif self.app_mode == "asr_jp":
             self.asr_jp_window.update_segment(text)
             self.handle_send_request(text)
             
-        # TTS call with delay - 等待蓝牙耳机从 HFP 切回 Stereo 模式
+        # TTS 逻辑：每次收到新翻译都打断之前的朗读，重新开始计时
+        # 只有停止输入一段时间后才朗读最终结果
         if tts_worker and self.m_cfg.auto_tts:
-            # 取消之前挂起的 TTS 请求
+            # 1. 打断之前正在进行的朗读
+            try:
+                tts_worker.stop()
+            except:
+                pass
+            
+            # 2. 取消之前的延迟 timer
             if hasattr(self, '_pending_tts_timer') and self._pending_tts_timer:
                 self._pending_tts_timer.stop()
-                # 如果有正在播放的语音，也中断它
-                try:
-                    tts_worker.stop()
-                except:
-                    pass
             
-            # 延迟播放 TTS，等待蓝牙模式切换完成
+            # 3. 创建新的延迟 timer（用户停止输入后才朗读）
             delay_ms = self.m_cfg.tts_delay_ms
-            self._pending_tts_timer = QTimer()
+            self._pending_tts_timer = QTimer(self)
             self._pending_tts_timer.setSingleShot(True)
             self._pending_tts_timer.timeout.connect(lambda t=text: self._play_tts_delayed(t))
             self._pending_tts_timer.start(delay_ms)
 
     def _play_tts_delayed(self, text):
-        """延迟执行的 TTS 播放"""
+        """延迟执行的 TTS 播放 - 只播放一次"""
         if tts_worker and text:
             import threading
             threading.Thread(target=tts_worker.say, args=(text,), daemon=True).start()
 
     def handle_send_request(self, text):
         if not text: return
-        self.sys_handler.paste_text(text)
+        
+        if self.app_mode == "translation":
+            # 如果正在翻译中，禁止发送（防止发送上一句翻译）
+            if self._is_translating:
+                print("[Main] 正在翻译中，忽略发送请求")
+                return
+            # 中日双显模式特有逻辑
+            # 只清空中文输入，保留日文显示
+            if hasattr(self.window, "clear_input"):
+                self.window.clear_input()
+            
+            # 检查是否有目标窗口
+            if self.sys_handler.has_target_window():
+                # 有目标窗口：粘贴+发送+refocus
+                self.sys_handler.paste_text(text, should_send=True)
+                def refocus():
+                    self.window.activateWindow()
+                    self.window.raise_()
+                    if hasattr(self.window, "focus_input"):
+                        self.window.focus_input()
+                QTimer.singleShot(100, refocus)
+            else:
+                # 没有目标窗口：设置待粘贴，等下一个窗口获得焦点时自动粘贴
+                def on_paste_done():
+                    # 粘贴完成后重新聚焦中日说
+                    QTimer.singleShot(200, lambda: self._refocus_translation_window())
+                self.sys_handler.set_pending_paste(text, on_paste_done)
+                # 立即 refocus 输入框
+                self.window.activateWindow()
+                self.window.raise_()
+                if hasattr(self.window, "focus_input"):
+                    self.window.focus_input()
+        else:
+            # ASR 模式：只粘贴，不发送 Enter
+            self.sys_handler.paste_text(text, should_send=False)
+    
+    def _refocus_translation_window(self):
+        """重新聚焦中日双显窗口"""
+        if self.app_mode == "translation" and self.tr_window:
+            self.tr_window.activateWindow()
+            self.tr_window.raise_()
+            if hasattr(self.tr_window, "focus_input"):
+                self.tr_window.focus_input()
 
     def handle_audio_level(self, level):
         if hasattr(self.window, "update_audio_level"):
@@ -264,7 +358,7 @@ class AppController(QObject):
         self.save_config()
 
     def handle_asr_output_mode_change(self, mode):
-        self.asr_manager.set_output_mode(mode)
+        self.m_cfg.asr_output_mode = mode
         self.save_config()
 
     def handle_theme_change(self, theme):
@@ -324,7 +418,6 @@ class AppController(QObject):
         active_window = self.window
         active_window.hide()
         
-        from settings_window import SettingsWindow
         self._settings_window = SettingsWindow(self.tr_engine)
         
         # 实时响应变更
@@ -421,12 +514,6 @@ class AppController(QObject):
     def on_recording_state_changed(self):
         pass
 
-    def on_record_pressed(self):
-        if self.audio_recorder.is_recording:
-            self.audio_recorder.stop_recording()
-        else:
-            self.audio_recorder.start_recording()
-
     def on_wake_up(self):
         """响应单实例唤醒请求"""
         if self.window:
@@ -438,93 +525,75 @@ class AppController(QObject):
         sys.exit(self.app.exec())
 
 if __name__ == "__main__":
+    # === 处理打包后的 stdout/stderr 缺失问题 (解决 AttributeError: 'NoneType' object has no attribute 'write') ===
+    import sys
+    import os
+    if getattr(sys, 'frozen', False):
+        # 如果是打包后的环境，且没有控制台
+        if sys.stdout is None:
+            sys.stdout = open(os.devnull, 'w')
+        if sys.stderr is None:
+            sys.stderr = open(os.devnull, 'w')
+            
+        # === 核心修复：彻底封杀 ffmpeg 等子进程产生的黑色闪窗 ===
+        import subprocess
+        _real_popen = subprocess.Popen
+        def _silent_popen(*args, **kwargs):
+            if 'creationflags' not in kwargs:
+                # 强制添加“不创建窗口”标记
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+            return _real_popen(*args, **kwargs)
+        subprocess.Popen = _silent_popen
+            
     multiprocessing.freeze_support()
     
     # 强制切换工作目录到脚本所在目录
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
     
-    # === 强力清理旧进程 ===
-    # 为了解决托盘重叠问题，启动时自动杀掉其他所有 main.py 进程
-    try:
-        current_pid = os.getpid()
-        print(f"正在清理旧进程... (Current PID: {current_pid})")
-        # PowerShell 命令：查找所有包含 main.py 的 python 进程，除了当前进程，全部强制结束
-        ps_cmd = (
-            f"Get-WmiObject Win32_Process | "
-            f"Where-Object {{ $_.CommandLine -like '*main.py*' -and $_.ProcessId -ne {current_pid} }} | "
-            f"Stop-Process -Force"
-        )
-        subprocess.run(["powershell", "-Command", ps_cmd], creationflags=subprocess.CREATE_NO_WINDOW)
-    except Exception as e:
-        print(f"清理旧进程失败: {e}")
-    # ====================
-
-    from PyQt6.QtWidgets import QApplication, QDialog
-    from PyQt6.QtCore import QLockFile, QDir
-    import tempfile
+    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtNetwork import QLocalSocket, QLocalServer
     
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     
-    # 1. 单实例检查与唤醒 (使用 QLocalServer)
-    from PyQt6.QtNetwork import QLocalSocket, QLocalServer
-    
-    server_name = "AI_JP_Input_Unique_Server"
+    # === 单实例检查 ===
+    # 尝试连接已存在的实例
+    server_name = "CNJP_Input_Server"
     socket = QLocalSocket()
     socket.connectToServer(server_name)
     
     if socket.waitForConnected(500):
-        # 连接成功，说明已有实例在运行
-        print("发现已有实例，尝试唤醒...")
-        # 发送唤醒指令
+        # 连接成功，说明已有实例在运行 → 唤醒它并退出
+        print("已有实例运行中，正在唤醒...")
         socket.write(b"SHOW")
         socket.waitForBytesWritten(1000)
         socket.disconnectFromServer()
         sys.exit(0)
     
-    # 2. 检查向导
+    # 没有已存在的实例 → 启动服务监听
+    server = QLocalServer()
+    # 清理可能残留的旧服务（如程序崩溃后遗留）
+    QLocalServer.removeServer(server_name)
+    
+    if not server.listen(server_name):
+        print(f"单实例服务启动失败: {server.errorString()}")
+    
+    # 启动主程序
     from model_config import get_model_config
-    from model_downloader import get_downloader
-    
     cfg = get_model_config()
-    downloader = get_downloader()
     
-    needs_setup = not cfg.data.get("wizard_completed", False) or \
-                  not downloader.is_model_installed("sensevoice_onnx")
-                  
-    if needs_setup:
-        from setup_wizard import SetupWizard
-        # 向导前也要清理可能的残留 Server (防意外)
-        QLocalServer.removeServer(server_name)
-        
-        wizard = SetupWizard()
-        if wizard.exec() == QDialog.DialogCode.Accepted:
-            cfg.wizard_completed = True
-        else:
-            sys.exit(0)
-            
-    # 3. 启动主程序
-    # 在 AppController 初始化后再启动 Server 监听，方便绑定信号
     controller = AppController(app)
     
-    # 启动单实例监听服务
-    server = QLocalServer()
-    # 必须先移除（如上次非正常退出残留）
-    QLocalServer.removeServer(server_name) 
-    if server.listen(server_name):
-        # 当收到新连接时（即第二个实例试图启动）
-        def handle_new_connection():
-            client = server.nextPendingConnection()
-            if client.waitForReadyRead(100):
-                cmd = client.readAll().data()
-                if cmd == b"SHOW":
-                    # 唤醒操作：打开设置窗口或显示主UI
-                    # 通过 controller 执行
-                    controller.on_wake_up()
-                    
-        server.newConnection.connect(handle_new_connection)
-    else:
-        print(f"Server Listen Error: {server.errorString()}")
-
+    # 绑定唤醒信号处理
+    def handle_new_connection():
+        client = server.nextPendingConnection()
+        if client and client.waitForReadyRead(100):
+            cmd = client.readAll().data()
+            if cmd == b"SHOW":
+                controller.on_wake_up()
+    
+    server.newConnection.connect(handle_new_connection)
+    
     sys.exit(app.exec())
+

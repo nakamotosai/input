@@ -1,60 +1,48 @@
 import PyInstaller.__main__
 import os
 import shutil
-import sys
-
 def build():
-    print("开始打包...")
+    # 更改名称为新的品牌名
+    app_name = "CNJP_Input"
+    print(f"🚀 正在打包 {app_name} (含自动补链)...")
     
-    # 获取当前目录
     base_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(base_dir)
-    
-    # 清理旧构建
-    if os.path.exists("dist"):
-        shutil.rmtree("dist")
-    if os.path.exists("build"):
-        shutil.rmtree("build")
-        
-    # 检查是否有 logo.png
-    add_data = []
-    if os.path.exists("logo.png"):
-        add_data.append('--add-data=logo.png;.')
-        
-    # PyInstaller 参数
+    # 清理缓存
+    for folder in ["dist", "build"]:
+        if os.path.exists(folder):
+            shutil.rmtree(folder, ignore_errors=True)
     args = [
         'main.py',
-        '--name=AI_JP_Input',
-        '--onefile',      # 打包成单文件 exe
-        '--noconsole',    # 不显示控制台窗口
-        '--clean',        # 清理缓存
-        # 排除不需要的模块以减小体积（可选）
-        # '--exclude-module=matplotlib',
-        # '--exclude-module=tkinter',
+        f'--name={app_name}',
+        '--onefile',
+        '--noconsole',
+        '--clean',
+        '--add-data=logo.png;.',
+        '--add-data=prompts.json;.',
+        '--add-data=version.json;.', # 更新检测需要
         
-        # 处理隐藏导入（如果有）
+        # 排除名单 (保持轻量)
+        '--exclude-module=torch',
+        '--exclude-module=matplotlib',
+        '--exclude-module=tkinter',
+        
+        # 核心隐藏导入 (重点修复报错)
+        '--hidden-import=win32gui',
+        '--hidden-import=win32con',
+        '--hidden-import=win32api',
+        '--hidden-import=pynput.keyboard._win32',
+        '--hidden-import=pynput.mouse._win32',
         '--hidden-import=sherpa_onnx',
-        '--hidden-import=sounddevice',
         '--hidden-import=ctranslate2',
-        
-        # 增加递归深度以防报错
-        '--runtime-hook=runtime_hook.py' if os.path.exists('runtime_hook.py') else None,
     ]
     
-    # 过滤 None
-    args = [a for a in args if a] + add_data
-    
-    # 如果有 icon
-    if os.path.exists("logo.png"):
-        args.append('--icon=logo.png')
-        
-    print(f"执行参数: {args}")
-    
+    if os.path.exists("logo.ico"):
+        args.append('--icon=logo.ico')
     try:
         PyInstaller.__main__.run(args)
-        print("\n打包成功！文件位于 dist/AI_JP_Input.exe")
+        print(f"\n✅ {app_name} 打包完成！")
     except Exception as e:
-        print(f"\n打包失败: {e}")
-
+        print(f"❌ 打包失败: {e}")
 if __name__ == "__main__":
     build()

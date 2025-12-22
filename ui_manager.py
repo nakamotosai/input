@@ -8,39 +8,10 @@ import os, json, sys, time, random
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
-# Global Font Loading
-FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
-SERIF_FONT_PATH = os.path.join(FONT_DIR, "NotoSerifSC-Regular.otf")
-SANS_FONT_PATH = os.path.join(FONT_DIR, "NotoSansSC-Regular.otf")
 LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
 
-class FontManager:
-    _serif_family = "Microsoft YaHei"
-    _sans_family = "Microsoft YaHei"
-    
-    @classmethod
-    def load_fonts(cls):
-        if os.path.exists(SERIF_FONT_PATH):
-            id = QFontDatabase.addApplicationFont(SERIF_FONT_PATH)
-            if id != -1:
-                cls._serif_family = QFontDatabase.applicationFontFamilies(id)[0]
-        if os.path.exists(SANS_FONT_PATH):
-            id = QFontDatabase.addApplicationFont(SANS_FONT_PATH)
-            if id != -1:
-                cls._sans_family = QFontDatabase.applicationFontFamilies(id)[0]
+from font_manager import FontManager
 
-    @classmethod
-    def get_font(cls, serif=True):
-        return cls._serif_family if serif else cls._sans_family
-
-    @classmethod
-    def get_correct_family(cls, name):
-        """Map user-friendly names to actual loaded font families"""
-        if name == "思源宋体":
-            return cls._serif_family
-        elif name == "思源黑体":
-            return cls._sans_family
-        return name
 
 class ScaledTextEdit(QTextEdit):
     sizeHintChanged = pyqtSignal(int, int) # suggested width, height
@@ -484,6 +455,7 @@ class HotkeyDialog(QDialog):
 
 class TranslatorWindow(QWidget):
     requestTranslation = pyqtSignal(str)
+    sigTranslationStarted = pyqtSignal() # 新增：翻译开始信号
     requestSend = pyqtSignal(str)
     requestAppModeChange = pyqtSignal(str)
     requestASREngineChange = pyqtSignal(str)
@@ -575,6 +547,13 @@ class TranslatorWindow(QWidget):
         self.container_layout.addWidget(self.bottom_section)
         self.bottom_fade = FadingOverlay(False, self.bottom_section)
 
+        # 核心：安装事件过滤器
+        self.container.installEventFilter(self)
+        self.top_section.installEventFilter(self)
+        self.bottom_section.installEventFilter(self)
+        self.zh_input.installEventFilter(self)
+        self.jp_display.installEventFilter(self)
+
         self.anim = QPropertyAnimation(self, b"minimumHeight")
         self.anim.setDuration(300)
         self.anim.setEasingCurve(QEasingCurve.Type.InOutSine)
@@ -584,11 +563,14 @@ class TranslatorWindow(QWidget):
         self._apply_scaling()
         self.debounce_timer = QTimer(); self.debounce_timer.setSingleShot(True); self.debounce_timer.timeout.connect(self._do_translation)
         
-        # Auto-clear timer (5 seconds)
+        self._dragging = False
+        self._drag_pos = None
+
+        # Auto-clear timer - 已禁用，日文显示保持到用户手动清空
         self.auto_clear_timer = QTimer(self)
         self.auto_clear_timer.setSingleShot(True)
         self.auto_clear_timer.setInterval(5000)
-        self.auto_clear_timer.timeout.connect(self.clear_input)
+        # 不再连接 clear_input，日文永久显示直到按X
 
     def clear_input_forced(self):
         self.zh_input.clear()
@@ -694,10 +676,13 @@ class TranslatorWindow(QWidget):
         self.show_context_menu(event.globalPos())
 
     def show_context_menu(self, global_pos):
+        self.activateWindow()
+        self.raise_()
+        
         menu = QMenu() # 不带 parent 以确保即便窗口隐藏时也能正常显示菜单
         # 1. 应用模式
         mode_menu = menu.addMenu("应用模式")
-        modes = [("asr", "语音输入模式"), ("asr_jp", "日语语音模式"), ("translation", "文字翻译模式")]
+        modes = [("asr", "中文直出模式"), ("asr_jp", "日文直出模式"), ("translation", "中日双显模式")]
         from model_config import get_model_config
         current_mode = get_model_config().app_mode
         for m_id, m_name in modes:
@@ -756,46 +741,67 @@ class TranslatorWindow(QWidget):
         self._dragging = False
 
     def eventFilter(self, obj, event):
-        # Forward mouse press from sections to the window for dragging
-        if obj in [self.top_section, self.bottom_section]:
-            if event.type() == QEvent.Type.MouseButtonPress:
-                if event.button() == Qt.MouseButton.LeftButton:
-                    self._start_drag(event.globalPosition().toPoint())
-                    return True
+        from PyQt6.QtCore import QEvent
+        # 处理拖动逻辑
+        if event.type() == QEvent.Type.MouseButtonPress:
+            if event.button() == Qt.MouseButton.LeftButton:
+                # 排除核心交互按钮，确保它们能正常接收按下和释放事件
+                if isinstance(obj, (QPushButton, ClearButton, VoicePulseButton)) or obj in [self.clear_btn, self.voice_btn]:
+                    return super().eventFilter(obj, event)
+                
+                self._start_drag(event.globalPosition().toPoint())
+                # 如果是输入区域，让其处理内部逻辑（如光标），但返回 False 允许拖动启动
+                if obj in [self.zh_input, self.jp_display]: 
+                    return False 
+                return True
+        
+        elif event.type() == QEvent.Type.MouseMove:
+            if getattr(self, '_dragging', False):
+                self.move(event.globalPosition().toPoint() - self._drag_pos)
+                return True
+                
+        elif event.type() == QEvent.Type.MouseButtonRelease:
+            if event.button() == Qt.MouseButton.LeftButton:
+                self._dragging = False
+                
         return super().eventFilter(obj, event)
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._dragging = False
+        self.activateWindow()
+        self.raise_()
+        # 强制 Win32 激活
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                ctypes.windll.user32.SetForegroundWindow(int(self.winId()))
+            except: pass
+
     def _on_text_changed(self): 
+        # 用户开始输入，立即发射开始信号，防止旧翻译被发送
+        self.sigTranslationStarted.emit()
         self.debounce_timer.start(300)
-        if self.zh_input.toPlainText().strip():
-            self.auto_clear_timer.start()
-        else:
-            self.auto_clear_timer.stop()
     def _do_translation(self):
         text = self.zh_input.toPlainText()
-        if text.strip(): self.requestTranslation.emit(text)
-        else: 
-            if not text: self.jp_display.clear()
-            self.jp_display._on_content_changed()
+        if text.strip(): 
+            self.requestTranslation.emit(text)
+        # 不清空日文显示，保留上一次翻译结果
     def set_zh_text(self, text): self.zh_input.setPlainText(text); self.zh_input._on_content_changed(); self._do_translation()
     def _handle_record_start(self): 
         self.auto_clear_timer.stop()
         self.update_recording_status(True); self.requestRecordStart.emit()
     def _handle_record_stop(self): 
         self.update_recording_status(False); self.requestRecordStop.emit()
-        if self.zh_input.toPlainText().strip():
-            self.auto_clear_timer.start()
     def update_recording_status(self, is_recording):
         self.voice_btn.set_recording(is_recording)
-        # Fix: Don't hide zh_input and don't show waveform in Translation Mode
-        # This keeps the layout stable and the red button on the right.
+        # 中日双显模式不显示波形条，只用按钮脉冲动画
+        # self.waveform.setVisible(is_recording)  # 禁用
         if is_recording:
-            self.auto_clear_timer.stop()
             if not self.zh_input.toPlainText():
                 self.zh_input.setPlaceholderText(self.m_cfg.get_prompt("listening"))
         else: 
             self.zh_input.setPlaceholderText(self.m_cfg.get_prompt("idle_tr"))
-            if self.zh_input.toPlainText().strip():
-                self.auto_clear_timer.start()
 
     def update_audio_level(self, level):
         if self.waveform.isVisible():
@@ -804,8 +810,7 @@ class TranslatorWindow(QWidget):
         self.jp_display.setPlaceholderText(self.m_cfg.get_prompt("idle_tr_res") or "等待输入..."); 
         self.jp_display.setPlainText(t); 
         self.jp_display._on_content_changed()
-        if t.strip() or self.zh_input.toPlainText().strip():
-            self.auto_clear_timer.start()
+        # 不再自动清空，日文保持显示
     def update_status(self, status):
         if status == "loading": 
             self.jp_display.setPlainText(""); self.jp_display.setPlaceholderText(self.m_cfg.get_prompt("loading"))
@@ -827,7 +832,16 @@ class TranslatorWindow(QWidget):
         self.set_zh_text(text)
     def focus_input(self):
         self.zh_input.setFocus(); c = self.zh_input.textCursor(); c.movePosition(c.MoveOperation.End); self.zh_input.setTextCursor(c)
-    def clear_input(self): self.zh_input.clear(); self.jp_display.clear(); self.jp_display._on_content_changed(); self.zh_input._on_content_changed()
+    def clear_input(self): 
+        """只清空中文输入区域，保留日文显示"""
+        self.zh_input.clear()
+        self.zh_input._on_content_changed()
+    def clear_all(self):
+        """清空所有内容（中文和日文）"""
+        self.zh_input.clear()
+        self.jp_display.clear()
+        self.jp_display._on_content_changed()
+        self.zh_input._on_content_changed()
     def _load_config(self):
         if os.path.exists(CONFIG_FILE):
             try:

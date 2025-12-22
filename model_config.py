@@ -1,9 +1,10 @@
 """
 模型配置管理模块
-管理所有ASR和翻译模型的配置、路径、可用性检测和ZIP解压
+管理 ASR 和翻译模型的配置、路径、可用性检测
 """
 
 import os
+import sys
 import zipfile
 import json
 from dataclasses import dataclass
@@ -12,15 +13,14 @@ from typing import Optional, Dict, List
 
 
 class ASREngineType(Enum):
-    """ASR引擎类型"""
-    SENSEVOICE_ONNX = "sensevoice_onnx"      # 轻量ONNX版(默认)
-    SENSEVOICE_PYTORCH = "sensevoice_pytorch" # 全量PyTorch版
+    """ASR引擎类型 (目前仅支持内置 Sherpa 版)"""
+    SENSEVOICE_ONNX = "sensevoice_onnx"
 
 
 class ASROutputMode(Enum):
-    """ASR输出模式"""
-    RAW = "raw"         # 原始输出
-    CLEANED = "cleaned" # 清理后输出
+    """ASR输出模式 (目前默认原始输出即可，Sherpa 自带标点)"""
+    RAW = "raw"
+    CLEANED = "cleaned"
 
 
 class TranslatorEngineType(Enum):
@@ -37,7 +37,7 @@ class ModelInfo:
     name: str           # 显示名称
     path: str           # 模型路径
     engine_type: str    # 引擎类型枚举值
-    loader: str         # 加载方式: "funasr_onnx", "funasr", "ctranslate2", "transformers"
+    loader: str         # 加载方式
     is_zip: bool = False # 是否为压缩包
     available: bool = False # 是否可用
 
@@ -89,28 +89,64 @@ class PersonalityManager:
 class ModelConfig:
     """模型配置管理器"""
     
-    # 模型基础目录
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    MODELS_DIR = os.path.join(BASE_DIR, "models")
-    CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
-    PROMPTS_PATH = os.path.join(BASE_DIR, "prompts.json")
+    # 获取基础目录逻辑：支持 PyInstaller 打包后的路径
+    if getattr(sys, 'frozen', False):
+        # 打包后的运行/资源目录
+        BASE_DIR = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(sys.executable)))
+        EXE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        # 开发环境
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        EXE_DIR = BASE_DIR
+
+    # 智能确定数据存储目录（需要写权限）
+    def _initialize_paths(base_dir, exe_dir):
+        # 给用户的配置和下载模型找个能写字的地方
+        # 如果 EXE 目录可写（如绿色版），优先用 EXE 目录；
+        # 如果不可写（如 Program Files），则用 %LOCALAPPDATA%
+        
+        test_dir = exe_dir
+        is_writable = False
+        try:
+            test_file = os.path.join(test_dir, '.write_test')
+            with open(test_file, 'w') as f: f.write('1')
+            os.remove(test_file)
+            is_writable = True
+        except:
+            is_writable = False
+
+        if is_writable:
+            data_root = exe_dir
+        else:
+            # 使用系统标准的用户数据存放目录
+            app_data = os.environ.get('LOCALAPPDATA', os.environ.get('APPDATA', os.path.expanduser('~')))
+            data_root = os.path.join(app_data, "CNJP_Input")
+        
+        os.makedirs(data_root, exist_ok=True)
+        
+        # 核心路径定义
+        config_path = os.path.join(data_root, "config.json")
+        user_models_dir = os.path.join(data_root, "models")
+        os.makedirs(user_models_dir, exist_ok=True)
+        
+        # 资源/内置模型目录 (只读)
+        bundled_models_dir = os.path.join(base_dir, "models")
+        prompts_path = os.path.join(base_dir, "prompts.json")
+        
+        return config_path, prompts_path, user_models_dir, bundled_models_dir
+
+    CONFIG_PATH, PROMPTS_PATH, MODELS_DIR, BUNDLED_MODELS_DIR = _initialize_paths(BASE_DIR, EXE_DIR)
     
-    # ASR模型定义
+    # ASR模型定义 (固定使用内置模型)
     ASR_MODELS: Dict[str, ModelInfo] = {
         ASREngineType.SENSEVOICE_ONNX.value: ModelInfo(
-            name="SenseVoice-Sherpa (ONNX/标点支持)", 
-            path="sensevoice_v1.zip",
+            name="内置 AI 语音引擎", 
+            path="sensevoice_sherpa",
             engine_type=ASREngineType.SENSEVOICE_ONNX.value,
             loader="sherpa_onnx",
-            is_zip=True,
-            available=True
-        ),
-        ASREngineType.SENSEVOICE_PYTORCH.value: ModelInfo(
-            name="SenseVoiceSmall (全量/备用)",
-            path="SenseVoiceSmall",
-            engine_type=ASREngineType.SENSEVOICE_PYTORCH.value,
-            loader="funasr"
-        ),
+            is_zip=False,
+            available=True # 默认内置视为可用
+        )
     }
     
     # 翻译模型定义
@@ -151,40 +187,45 @@ class ModelConfig:
         self._hotkey_asr = "ctrl+windows"
         self._hotkey_toggle_ui = "alt+windows"
         self._auto_tts = False
-        self._tts_delay_ms = 5000
-        self._wizard_completed = False
+        self._tts_delay_ms = 1000
+        self._wizard_completed = True # 默认已完成
         self._theme_mode = "Dark"
         self._window_scale = 1.0
         self._font_name = "思源宋体"
         self._app_mode = "asr"
+        self._tip_shown = False
         self.data = {}
         self._load_config()
         self._scan_models()
         self.personality = PersonalityManager(self.PROMPTS_PATH)
     
     def _load_config(self):
-        """从config.json加载配置"""
         try:
             if os.path.exists(self.CONFIG_PATH):
                 with open(self.CONFIG_PATH, 'r', encoding='utf-8') as f:
                     self.data = json.load(f)
-                    self._current_asr_engine = self.data.get('asr_engine', self._current_asr_engine)
+                    self._current_asr_engine = ASREngineType.SENSEVOICE_ONNX.value # 强制固定
                     self._current_translator_engine = self.data.get('translator_engine', self._current_translator_engine)
                     self._asr_output_mode = self.data.get('asr_output_mode', self._asr_output_mode)
                     self._hotkey_asr = self.data.get('hotkey_asr', self._hotkey_asr)
                     self._hotkey_toggle_ui = self.data.get('hotkey_toggle_ui', self._hotkey_toggle_ui)
                     self._auto_tts = self.data.get('auto_tts', self._auto_tts)
                     self._tts_delay_ms = self.data.get('tts_delay_ms', self._tts_delay_ms)
-                    self._wizard_completed = self.data.get('wizard_completed', self._wizard_completed)
+                    self._wizard_completed = True 
                     self._theme_mode = self.data.get('theme_mode', self._theme_mode)
                     self._window_scale = self.data.get('window_scale', self._window_scale)
                     self._font_name = self.data.get('font_name', self._font_name)
                     self._app_mode = self.data.get('app_mode', self._app_mode)
+                    self._tip_shown = self.data.get('tip_shown', self._tip_shown)
         except Exception as e:
-            print(f"[ModelConfig] 加载配置失败: {e}")
+            # 最小化日志记录，便于调试打包后的问题
+            try:
+                log_path = os.path.join(os.path.dirname(self.CONFIG_PATH), "error.log")
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"[load_config] {e}\n")
+            except: pass
     
     def save_config(self):
-        """保存配置到config.json"""
         try:
             config = {}
             if os.path.exists(self.CONFIG_PATH):
@@ -198,158 +239,103 @@ class ModelConfig:
             config['hotkey_toggle_ui'] = self._hotkey_toggle_ui
             config['auto_tts'] = self._auto_tts
             config['tts_delay_ms'] = self._tts_delay_ms
-            config['wizard_completed'] = self._wizard_completed
+            config['wizard_completed'] = True
             config['theme_mode'] = self._theme_mode
             config['window_scale'] = self._window_scale
             config['font_name'] = self._font_name
             config['app_mode'] = self._app_mode
-            
-            self.data = config # 同步内存中的 data
-            
+            config['tip_shown'] = self._tip_shown
+            self.data = config
             with open(self.CONFIG_PATH, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
         except Exception as e:
-            print(f"[ModelConfig] 保存配置失败: {e}")
+            try:
+                log_path = os.path.join(os.path.dirname(self.CONFIG_PATH), "error.log")
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"[save_config] {e}\n")
+            except: pass
     
     def _scan_models(self):
-        """扫描模型目录，检测模型可用性"""
-        # 扫描ASR模型
-        for key, model in self.ASR_MODELS.items():
-            full_path = os.path.join(self.MODELS_DIR, model.path)
-            model.available = os.path.exists(full_path)
+        # ASR 始终由于内置而可用
+        self.ASR_MODELS[ASREngineType.SENSEVOICE_ONNX.value].available = True
         
-        # 扫描翻译模型
+        # 扫描翻译模型 (同时检查用户目录和内置目录)
         for key, model in self.TRANSLATOR_MODELS.items():
-            if model.is_zip:
-                zip_path = os.path.join(self.MODELS_DIR, model.path)
-                extracted_path = self._get_extracted_path(model.path)
-                # ZIP存在或已解压目录存在都算可用
-                model.available = os.path.exists(zip_path) or os.path.exists(extracted_path)
-            else:
-                full_path = os.path.join(self.MODELS_DIR, model.path)
-                model.available = os.path.exists(full_path)
-    
-    def _get_extracted_path(self, zip_filename: str) -> str:
-        """获取解压后的目录路径"""
-        # 去掉.zip后缀作为目录名
-        dir_name = zip_filename.replace('.zip', '')
-        return os.path.join(self.MODELS_DIR, dir_name)
+            found = False
+            for root in [self.MODELS_DIR, self.BUNDLED_MODELS_DIR]:
+                if not os.path.exists(root): continue
+                
+                if model.is_zip:
+                    zip_path = os.path.join(root, model.path)
+                    extracted_path = os.path.join(root, model.path.replace('.zip', ''))
+                    if os.path.exists(zip_path) or os.path.exists(extracted_path):
+                        found = True; break
+                else:
+                    full_path = os.path.join(root, model.path)
+                    if os.path.exists(full_path):
+                        found = True; break
+            model.available = found
     
     def ensure_model_extracted(self, engine_type: str) -> Optional[str]:
-        """
-        确保模型已解压（如果是ZIP格式）
-        返回模型的实际路径（处理嵌套目录的情况）
-        """
-        # 查找模型信息
-        model = None
-        if engine_type in self.TRANSLATOR_MODELS:
-            model = self.TRANSLATOR_MODELS[engine_type]
-        elif engine_type in self.ASR_MODELS:
-            model = self.ASR_MODELS[engine_type]
+        model = self.TRANSLATOR_MODELS.get(engine_type) or self.ASR_MODELS.get(engine_type)
+        if not model: return None
         
-        if not model:
-            return None
+        # 查找路径
+        search_roots = [self.MODELS_DIR, self.BUNDLED_MODELS_DIR]
         
-        full_path = os.path.join(self.MODELS_DIR, model.path)
-        
-        if not model.is_zip:
-            return full_path if os.path.exists(full_path) else None
-        
-        # 处理ZIP文件
-        extracted_path = self._get_extracted_path(model.path)
-        
-        # 检查解压后的实际模型路径
-        actual_model_path = self._find_actual_model_path(extracted_path)
-        if actual_model_path:
-            print(f"[ModelConfig] 模型已解压: {actual_model_path}")
-            return actual_model_path
-        
-        # 需要解压
-        zip_path = full_path
-        if not os.path.exists(zip_path):
-            print(f"[ModelConfig] ZIP文件不存在: {zip_path}")
-            return None
-        
-        print(f"[ModelConfig] 正在解压模型: {zip_path}")
-        try:
-            with zipfile.ZipFile(zip_path, 'r') as zf:
-                zf.extractall(extracted_path)
-            print(f"[ModelConfig] 解压完成: {extracted_path}")
+        # 1. 先看有没有解压好的
+        for root in search_roots:
+            if not os.path.exists(root): continue
+            extracted_path = os.path.join(root, model.path.replace('.zip', '') if model.is_zip else model.path)
+            if os.path.exists(extracted_path): return extracted_path
             
-            # 返回实际的模型路径（处理嵌套）
-            return self._find_actual_model_path(extracted_path) or extracted_path
-        except Exception as e:
-            print(f"[ModelConfig] 解压失败: {e}")
-            return None
-    
-    def _find_actual_model_path(self, extracted_path: str) -> Optional[str]:
-        """
-        查找实际的模型路径
-        处理ZIP解压后可能存在的嵌套目录结构
-        """
-        if not os.path.exists(extracted_path):
-            return None
+        # 2. 没有解压好的，看有没有 zip 到处找
+        if not model.is_zip: return None
         
-        # 检查是否包含model.bin（ctranslate2模型标志）
-        if os.path.exists(os.path.join(extracted_path, "model.bin")):
-            return extracted_path
+        zip_path = None
+        for root in search_roots:
+            p = os.path.join(root, model.path)
+            if os.path.exists(p):
+                zip_path = p; break
         
-        # 检查是否包含sentencepiece.model（也是CT2模型的标志）
-        if os.path.exists(os.path.join(extracted_path, "sentencepiece.model")):
-            return extracted_path
+        if not zip_path: return None
         
-        # 检查嵌套目录
-        items = os.listdir(extracted_path)
-        subdirs = [d for d in items if os.path.isdir(os.path.join(extracted_path, d))]
+        # 3. 准备解压。注意：如果 zip 在只读目录，解压目标必须去用户可写目录
+        target_extract_root = self.MODELS_DIR if not self._is_path_writable(os.path.dirname(zip_path)) else os.path.dirname(zip_path)
+        final_extract_path = os.path.join(target_extract_root, model.path.replace('.zip', ''))
         
-        # 如果只有一个子目录，检查其中是否有model.bin
-        if len(subdirs) == 1:
-            nested_path = os.path.join(extracted_path, subdirs[0])
-            if os.path.exists(os.path.join(nested_path, "model.bin")):
-                return nested_path
-            if os.path.exists(os.path.join(nested_path, "sentencepiece.model")):
-                return nested_path
+        if os.path.exists(final_extract_path): return final_extract_path
         
-        # 没有找到有效的模型目录，但目录存在
-        if os.path.isdir(extracted_path):
-            return extracted_path
-        
-        return None
+        try:
+            os.makedirs(target_extract_root, exist_ok=True)
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                zf.extractall(final_extract_path)
+            return final_extract_path
+        except: return None
+
+    def _is_path_writable(self, path):
+        try:
+            test_file = os.path.join(path, '.test')
+            with open(test_file, 'w') as f: f.write('1')
+            os.remove(test_file)
+            return True
+        except: return False
     
     def get_model_path(self, engine_type: str) -> Optional[str]:
-        """获取模型的完整路径（自动处理ZIP解压）"""
         return self.ensure_model_extracted(engine_type)
     
-    # === ASR引擎设置 ===
-    
     @property
-    def current_asr_engine(self) -> str:
-        return self._current_asr_engine
+    def current_asr_engine(self) -> str: return self._current_asr_engine
     
     @current_asr_engine.setter
-    def current_asr_engine(self, value: str):
-        if value in self.ASR_MODELS:
-            self._current_asr_engine = value
-            self.save_config()
+    def current_asr_engine(self, value: str): pass # 不再允许修改
     
-    def get_asr_model_info(self, engine_type: str = None) -> Optional[ModelInfo]:
-        """获取ASR模型信息"""
-        engine = engine_type or self._current_asr_engine
-        return self.ASR_MODELS.get(engine)
-    
-    def get_asr_model_path(self, engine_type: str = None) -> Optional[str]:
-        """获取ASR模型路径"""
-        engine = engine_type or self._current_asr_engine
-        model = self.ASR_MODELS.get(engine)
-        if model:
-            return os.path.join(self.MODELS_DIR, model.path)
-        return None
-    
-    # === 翻译引擎设置 ===
+    def get_asr_model_path(self) -> Optional[str]:
+        # 不要写死路径，要使用统一的搜索逻辑（支持查找内置目录）
+        return self.get_model_path(ASREngineType.SENSEVOICE_ONNX.value)
     
     @property
-    def current_translator_engine(self) -> str:
-        return self._current_translator_engine
+    def current_translator_engine(self) -> str: return self._current_translator_engine
     
     @current_translator_engine.setter
     def current_translator_engine(self, value: str):
@@ -357,21 +343,12 @@ class ModelConfig:
             self._current_translator_engine = value
             self.save_config()
     
-    def get_translator_model_info(self, engine_type: str = None) -> Optional[ModelInfo]:
-        """获取翻译模型信息"""
-        engine = engine_type or self._current_translator_engine
-        return self.TRANSLATOR_MODELS.get(engine)
-    
     def get_translator_model_path(self, engine_type: str = None) -> Optional[str]:
-        """获取翻译模型路径（自动处理ZIP解压）"""
         engine = engine_type or self._current_translator_engine
         return self.get_model_path(engine)
     
-    # === ASR输出模式 ===
-    
     @property
-    def asr_output_mode(self) -> str:
-        return self._asr_output_mode
+    def asr_output_mode(self) -> str: return self._asr_output_mode
     
     @asr_output_mode.setter
     def asr_output_mode(self, value: str):
@@ -380,144 +357,84 @@ class ModelConfig:
             self.save_config()
 
     @property
-    def hotkey_asr(self) -> str:
-        return self._hotkey_asr
-
+    def hotkey_asr(self) -> str: return self._hotkey_asr
     @hotkey_asr.setter
     def hotkey_asr(self, value: str):
         self._hotkey_asr = value
         self.save_config()
 
     @property
-    def hotkey_toggle_ui(self) -> str:
-        return self._hotkey_toggle_ui
-
+    def hotkey_toggle_ui(self) -> str: return self._hotkey_toggle_ui
     @hotkey_toggle_ui.setter
     def hotkey_toggle_ui(self, value: str):
         self._hotkey_toggle_ui = value
         self.save_config()
 
     @property
-    def auto_tts(self) -> bool:
-        return self._auto_tts
-
+    def auto_tts(self) -> bool: return self._auto_tts
     @auto_tts.setter
     def auto_tts(self, value: bool):
         self._auto_tts = value
         self.save_config()
 
     @property
-    def tts_delay_ms(self) -> int:
-        """TTS 播放延迟时间（毫秒），用于等待蓝牙耳机从 HFP 切换回 Stereo 模式"""
-        return getattr(self, '_tts_delay_ms', 5000)
-
+    def tts_delay_ms(self) -> int: return getattr(self, '_tts_delay_ms', 5000)
     @tts_delay_ms.setter
     def tts_delay_ms(self, value: int):
         self._tts_delay_ms = max(0, int(value))
         self.save_config()
 
     @property
-    def theme_mode(self) -> str:
-        return self._theme_mode
-    
+    def theme_mode(self) -> str: return self._theme_mode
     @theme_mode.setter
     def theme_mode(self, value: str):
         self._theme_mode = value
         self.save_config()
 
     @property
-    def window_scale(self) -> float:
-        return float(self._window_scale)
-    
+    def window_scale(self) -> float: return float(self._window_scale)
     @window_scale.setter
     def window_scale(self, value: float):
         self._window_scale = float(value)
         self.save_config()
 
     @property
-    def font_name(self) -> str:
-        return self._font_name
-    
+    def font_name(self) -> str: return self._font_name
     @font_name.setter
     def font_name(self, value: str):
         self._font_name = value
         self.save_config()
 
     @property
-    def wizard_completed(self) -> bool:
-        return self._wizard_completed
-
+    def wizard_completed(self) -> bool: return True
     @wizard_completed.setter
-    def wizard_completed(self, value: bool):
-        self._wizard_completed = value
-        self.save_config()
+    def wizard_completed(self, value: bool): pass
 
     @property
-    def app_mode(self) -> str:
-        return self._app_mode
-
+    def app_mode(self) -> str: return self._app_mode
     @app_mode.setter
     def app_mode(self, value: str):
         self._app_mode = value
         self.save_config()
 
-    # === 辅助方法 ===
-    
-    def get_available_asr_engines(self) -> List[ModelInfo]:
-        """获取所有可用的ASR引擎"""
-        return [m for m in self.ASR_MODELS.values() if m.available]
-    
+    @property
+    def tip_shown(self) -> bool: return self._tip_shown
+    @tip_shown.setter
+    def tip_shown(self, value: bool):
+        self._tip_shown = value
+        self.save_config()
+
     def get_available_translator_engines(self) -> List[ModelInfo]:
-        """获取所有可用的翻译引擎"""
         return [m for m in self.TRANSLATOR_MODELS.values() if m.available]
     
-    def get_prompt(self, key) -> str:
-        """获取当前个性化方案的提示词"""
-        return self.personality.get_prompt(key)
-
-    def set_personality_scheme(self, scheme_id):
-        """设置当前个性化方案"""
-        self.personality.set_scheme(scheme_id)
-
-    def get_personality_schemes(self):
-        """获取所有可选方案"""
-        return self.personality.get_all_schemes()
-    
-    def is_placeholder_text(self, text):
-        """检查文本是否为任何模式下的提示词"""
-        return self.personality.is_any_placeholder(text)
-    
-    def print_status(self):
-        """打印模型状态"""
-        print("\n=== 模型状态 ===")
-        print("ASR模型:")
-        for key, model in self.ASR_MODELS.items():
-            status = "✓" if model.available else "✗"
-            current = "←当前" if key == self._current_asr_engine else ""
-            print(f"  [{status}] {model.name} {current}")
-        
-        print("\n翻译模型:")
-        for key, model in self.TRANSLATOR_MODELS.items():
-            status = "✓" if model.available else "✗"
-            current = "←当前" if key == self._current_translator_engine else ""
-            print(f"  [{status}] {model.name} {current}")
-        
-        print(f"\nASR输出模式: {self._asr_output_mode}")
-        print("================\n")
-
+    def get_prompt(self, key) -> str: return self.personality.get_prompt(key)
+    def set_personality_scheme(self, scheme_id): self.personality.set_scheme(scheme_id)
+    def get_personality_schemes(self): return self.personality.get_all_schemes()
+    def is_placeholder_text(self, text): return self.personality.is_any_placeholder(text)
 
 # 全局单例
 _model_config_instance: Optional[ModelConfig] = None
-
 def get_model_config() -> ModelConfig:
-    """获取模型配置单例"""
     global _model_config_instance
-    if _model_config_instance is None:
-        _model_config_instance = ModelConfig()
+    if _model_config_instance is None: _model_config_instance = ModelConfig()
     return _model_config_instance
-
-
-if __name__ == "__main__":
-    # 测试
-    config = get_model_config()
-    config.print_status()

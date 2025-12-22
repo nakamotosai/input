@@ -5,12 +5,46 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QProgressBar, QFrame
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QThread, QObject, pyqtSlot
 from PyQt6.QtGui import QKeyEvent, QKeySequence, QFont
 
 from model_downloader import get_downloader, DownloadStatus
 from model_config import TranslatorEngineType, get_model_config
-from ui_manager import FontManager
+from font_manager import FontManager
+
+class DownloadWorker(QObject):
+    """
+    独立下载工作线程
+    替代之前的 threading.Thread + callback 模式，解决UI刷新卡死问题
+    """
+    progressChanged = pyqtSignal(int, int, str)    # downloaded, total, speed
+    statusChanged = pyqtSignal(object, str)        # status_enum, msg (object to handle Enum)
+    finished = pyqtSignal(bool)
+
+    def __init__(self, model_id):
+        super().__init__()
+        self.model_id = model_id
+        self.downloader = get_downloader()
+
+    def run(self):
+        # 定义回调函数桥接到信号
+        def on_progress(downloaded, total, speed):
+            self.progressChanged.emit(downloaded, total, speed)
+        
+        def on_status(status, msg):
+            self.statusChanged.emit(status, msg)
+
+        try:
+            success = self.downloader.download_model(
+                self.model_id, 
+                progress_callback=on_progress, 
+                status_callback=on_status
+            )
+            self.finished.emit(success)
+        except Exception as e:
+            self.statusChanged.emit(DownloadStatus.FAILED, str(e))
+            self.finished.emit(False)
+
 
 class HotkeyButton(QPushButton):
     """自定义快捷键按钮"""
@@ -156,18 +190,24 @@ class ModelOptionWidget(QWidget):
         self.downloader = get_downloader()
         self.is_light = False
         
+        # 线程相关
+        self.thread = None
+        self.worker = None
+        
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(5)
+        layout.setSpacing(0)
         
         self.btn = QPushButton()
         self.btn.setCheckable(True)
-        self.btn.setFixedHeight(60)
-        self.btn.clicked.connect(lambda: self.selected.emit(self.model_id))
+        self.btn.setFixedHeight(70) # Increased height to accommodate progress bar
+        self.btn.clicked.connect(self._on_btn_clicked)
         
-        btn_layout = QHBoxLayout(self.btn)
-        btn_layout.setContentsMargins(15, 10, 15, 10)
+        btn_layout = QVBoxLayout(self.btn)
+        btn_layout.setContentsMargins(15, 8, 15, 8)
+        btn_layout.setSpacing(2)
         
+        top_row = QHBoxLayout()
         text_layout = QVBoxLayout()
         self.title_lbl = QLabel(title)
         self.title_lbl.setStyleSheet("font-weight: bold; font-size: 13px; background: transparent;")
@@ -175,27 +215,93 @@ class ModelOptionWidget(QWidget):
         self.desc_lbl.setStyleSheet("font-size: 11px; color: #888888; background: transparent;")
         text_layout.addWidget(self.title_lbl)
         text_layout.addWidget(self.desc_lbl)
-        btn_layout.addLayout(text_layout, 1)
+        top_row.addLayout(text_layout, 1)
         
         self.status_lbl = QLabel("")
         self.status_lbl.setStyleSheet("font-size: 12px; color: white; background: transparent;")
-        btn_layout.addWidget(self.status_lbl)
+        top_row.addWidget(self.status_lbl)
+        btn_layout.addLayout(top_row)
+        
+        self.progress = QProgressBar()
+        self.progress.setFixedHeight(4)
+        self.progress.setTextVisible(False)
+        self.progress.hide()
+        btn_layout.addWidget(self.progress)
         
         layout.addWidget(self.btn)
         self._update_style()
         self._check_status()
 
-    def _check_status(self):
+    def _on_btn_clicked(self):
+        dl_key = self._get_dl_key()
+        if not self.downloader.is_model_installed(dl_key):
+            self.btn.setChecked(False) # 还没安装，不能选中
+            self.start_download()
+        else:
+            self.selected.emit(self.model_id)
+
+    def _get_dl_key(self):
         dl_key = self.model_id.lower()
-        if "sensevoice" in dl_key: dl_key = "sensevoice_onnx"
-        elif "600m" in dl_key: dl_key = "nllb_600m"
-        
+        if "sensevoice" in dl_key: return "sensevoice_onnx"
+        if "600m" in dl_key: return "nllb_600m"
+        return dl_key
+
+    def _check_status(self):
+        dl_key = self._get_dl_key()
         if self.downloader.is_model_installed(dl_key):
             self.status_lbl.setText("已安装")
-            self.status_lbl.setStyleSheet("font-size: 12px; color: white; background: transparent;")
+            self.status_lbl.setStyleSheet("font-size: 12px; color: #4ade80; background: transparent;")
+            self.progress.hide()
         else:
-            self.status_lbl.setText("待安装")
-            self.status_lbl.setStyleSheet("font-size: 12px; color: #888888; background: transparent;")
+            self.status_lbl.setText("待安装 (点击开始)")
+            self.status_lbl.setStyleSheet("font-size: 12px; color: #f87171; background: transparent;")
+
+    def start_download(self):
+        dl_key = self._get_dl_key()
+        self.btn.setEnabled(False)
+        self.status_lbl.setText("准备下载...")
+        self.progress.setValue(0)
+        self.progress.show()
+        
+        # 创建线程
+        self.thread = QThread()
+        self.worker = DownloadWorker(dl_key)
+        self.worker.moveToThread(self.thread)
+        
+        # 链接信号
+        self.thread.started.connect(self.worker.run)
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+        
+        self.worker.progressChanged.connect(self._on_dl_progress)
+        self.worker.statusChanged.connect(self._on_dl_status)
+        
+        # 启动
+        self.thread.start()
+        
+    def _on_dl_progress(self, downloaded, total, speed):
+        if total > 0:
+            percent = int((downloaded / total) * 100)
+            self.progress.setValue(percent)
+            self.status_lbl.setText(f"{percent}% {speed}")
+            
+    def _on_dl_status(self, status, msg):
+        if status == DownloadStatus.COMPLETED:
+            self.progress.hide()
+            self.btn.setEnabled(True)
+            self._check_status()
+            self.selected.emit(self.model_id)
+            self.btn.setChecked(True)
+        elif status == DownloadStatus.FAILED:
+            self.status_lbl.setText("下载失败")
+            self.btn.setEnabled(True)
+            self.progress.hide()
+        elif status == DownloadStatus.EXTRACTING:
+            self.status_lbl.setText("正在解压...")
+        else:
+            if "%" not in msg:
+                self.status_lbl.setText(msg)
 
     def _update_style(self):
         if self.is_light:
@@ -372,7 +478,12 @@ class TranslatorSelectorWidget(QWidget):
         self.tr_engine = tr_engine
         self.downloader = get_downloader()
         self.m_cfg = get_model_config()
+        self.pending_engine_id = None  # 记录正在切换中的引擎，防止 UI 跳变
         self._setup_ui()
+        
+        # 线程
+        self.thread = None
+        self.worker = None
         
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -428,11 +539,15 @@ class TranslatorSelectorWidget(QWidget):
     def sync_status(self):
         current_id = self.tr_engine.current_engine_id
         is_ready = self.tr_engine.local_is_ready if current_id != "online" else True
-        self.monitor.set_status(current_id, "就绪" if is_ready else "正在初始化", is_ready)
+        self.monitor.set_status(current_id, "就绪" if is_ready else "正在初始化，请稍等几秒钟...", is_ready)
         
         config_id = self.m_cfg.current_translator_engine
-        self.btn_google.setChecked(config_id == "online")
-        self.btn_nllb.setChecked(config_id != "online")
+        
+        # 优先级：正在切换的目标 > 当前运行的引擎 > 配置记录
+        active_id = self.pending_engine_id if self.pending_engine_id else (current_id if current_id else config_id)
+        
+        self.btn_google.setChecked(active_id == "online")
+        self.btn_nllb.setChecked(active_id == TranslatorEngineType.NLLB_600M_CT2.value)
         
         if not self.downloader.is_model_installed("nllb_600m"):
             self.monitor.info_lbl.setText("提示: NLLB 600M 本地模型暂未下载")
@@ -493,36 +608,139 @@ class TranslatorSelectorWidget(QWidget):
                 return
         
         self.monitor.set_status(engine_id, "正在加载...", False)
+        self.pending_engine_id = engine_id
         self.m_cfg.current_translator_engine = engine_id
         self.m_cfg.save_config()
         self.engineChangeRequested.emit(engine_id)
-        self.sync_status()
+        # 移除此处的 sync_status()，因为它会根据尚未改变的真个引擎状态把 UI 改回去
+        self._update_button_styles() # 仅更新按钮样式
 
     def _start_download(self, dl_key: str):
         self.btn_nllb.setEnabled(False)
         self.monitor.set_status(TranslatorEngineType.NLLB_600M_CT2.value, "准备下载...", False)
         self.progress.show()
         
-        def on_progress(downloaded, total, speed):
-            if total > 0:
-                percent = int((downloaded / total) * 100)
-                QTimer.singleShot(0, lambda: self.progress.setValue(percent))
-
-        def on_status(status, msg):
-            def update_ui():
-                if status == DownloadStatus.COMPLETED:
-                    self.progress.hide()
-                    self.btn_nllb.setEnabled(True)
-                    self._on_engine_clicked(TranslatorEngineType.NLLB_600M_CT2.value)
-                elif status == DownloadStatus.FAILED:
-                    self.monitor.set_status(None, f"下载失败: {msg}", False)
-                    self.btn_nllb.setEnabled(True)
-                    self.progress.hide()
-            QTimer.singleShot(0, update_ui)
-
-        import threading
-        threading.Thread(target=self.downloader.download_model, args=(dl_key, on_progress, on_status), daemon=True).start()
+        # 停止旧线程如果存在
+        if self.thread and self.thread.isRunning():
+            self.thread.quit()
+            self.thread.wait()
+            
+        self.thread = QThread()
+        self.worker = DownloadWorker(dl_key)
+        self.worker.moveToThread(self.thread)
+        
+        # 连接信号
+        self.thread.started.connect(self.worker.run)
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+        
+        self.worker.progressChanged.connect(self._on_dl_progress)
+        self.worker.statusChanged.connect(self._on_dl_status)
+        
+        self.thread.start()
+            
+    def _on_dl_progress(self, downloaded, total, speed):
+        if total > 0:
+            percent = int((downloaded / total) * 100)
+            self.progress.setValue(percent)
+            self.monitor.set_status(
+                TranslatorEngineType.NLLB_600M_CT2.value, 
+                f"正在下载: {percent}% ({speed})", 
+                False
+            )
+            
+    def _on_dl_status(self, status, msg):
+        if status == DownloadStatus.COMPLETED:
+            self.progress.hide()
+            self.btn_nllb.setEnabled(True)
+            self.monitor.info_lbl.setText("安装成功！正在切换引擎...")
+            self._on_engine_clicked(TranslatorEngineType.NLLB_600M_CT2.value)
+        elif status == DownloadStatus.FAILED:
+            self.monitor.set_status(TranslatorEngineType.NLLB_600M_CT2.value, f"失败: {msg}", False)
+            self.btn_nllb.setEnabled(True)
+            self.progress.hide()
+        else:
+            if "%" not in msg:
+                 self.monitor.set_status(TranslatorEngineType.NLLB_600M_CT2.value, msg, False)
 
     def update_engine_status(self, status: str):
+        """引擎加载完成或状态改变的回调"""
         current_id = self.m_cfg.current_translator_engine
-        self.monitor.set_status(current_id, status, "就绪" in status or "完成" in status)
+        is_ready = any(x in status for x in ["完成", "就绪", "成功", "ready", "idle"])
+        
+        if is_ready:
+            self.pending_engine_id = None # 清除挂起状态
+            
+        self.monitor.set_status(current_id, status, is_ready)
+        # 刷新按钮状态和高亮
+        self.sync_status()
+
+
+class TeachingTip(QFrame):
+    """新手教学气泡提示"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(15, 12, 15, 12)
+        
+        # 提示内容
+        self.label = QLabel(
+            "💡 <b>新手提示</b><br><br>"
+            "1. 按住 <b>Win + Ctrl</b> 说话，松开后停止<br>"
+            "2. <b>Win + Alt</b> 快速显示或隐藏窗口<br>"
+            "3. 界面上<b>右键</b>后会弹出菜单，可切换模式或在设置中选择本地模型"
+        )
+        self.label.setWordWrap(True)
+        self.label.setFixedWidth(280)
+        self.label.setStyleSheet("color: white; font-size: 13px; line-height: 1.5;")
+        layout.addWidget(self.label)
+        
+        # 关闭按钮
+        close_btn = QPushButton("我知道了")
+        close_btn.setFixedWidth(80)
+        close_btn.setFixedHeight(28)
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.clicked.connect(self.close)
+        
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
+        
+        self.setStyleSheet("""
+            TeachingTip {
+                background-color: #1e1e1e;
+                border: 1px solid #4d4d4d;
+                border-radius: 0px;
+            }
+            QPushButton {
+                background-color: #0e639c;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1177bb;
+            }
+        """)
+
+    def show_beside(self, widget):
+        """在指定组件旁边显示"""
+        if not widget: return
+        pos = widget.mapToGlobal(widget.rect().topRight())
+        # 添加阴影效果
+        from PyQt6.QtWidgets import QGraphicsDropShadowEffect
+        from PyQt6.QtGui import QColor
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(20)
+        shadow.setColor(QColor(0, 0, 0, 180))
+        shadow.setOffset(0, 4)
+        self.setGraphicsEffect(shadow)
+        
+        self.move(pos.x() + 20, pos.y())
+        self.show()

@@ -14,7 +14,7 @@ class AppTrayIcon(QSystemTrayIcon):
         logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
         super().__init__(QIcon(logo_path), parent)
         self.signals = TraySignals() # Keep for compatibility if needed, though mostly unused now
-        self.setToolTip("AI 实时翻译助手")
+        self.setToolTip("中日说")
         self.show()
 
     def set_mode_checked(self, mode_id):

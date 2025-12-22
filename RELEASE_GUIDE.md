@@ -117,8 +117,8 @@ def check_update():
 ; 脚本生成向导
 #define MyAppName "AI 日语输入法"
 #define MyAppVersion "1.0.0"
-#define MyAppPublisher "Cai Siyang"
-#define MyAppURL "https://github.com/your-repo"
+#define MyAppPublisher "nakamotosai"
+#define MyAppURL "https://github.com/caisiyang/input"
 #define MyAppExeName "AI_JP_Input.exe"
 
 [Setup]

@@ -1,4 +1,4 @@
-# AI 日语输入法 - 依赖列表
+# 中日说 (CNJP Input) - 依赖列表
 # 核心框架
 PyQt6>=6.4.0
 
@@ -8,7 +8,7 @@ sounddevice>=0.4.6
 pydub>=0.25.1
 
 # 语音识别 (ASR)
-funasr>=0.8.0
+sherpa-onnx>=1.10.0
 onnxruntime>=1.15.0
 
 # 翻译引擎
@@ -17,7 +17,6 @@ sentencepiece>=0.1.99
 
 # 语音合成 (TTS)
 edge-tts>=6.1.0
-pygame>=2.5.0
 
 # 系统交互
 pynput>=1.7.6 # (Backup)

@@ -11,7 +11,7 @@ from typing import Optional
 class StartupManager:
     """Windows 开机自启动管理"""
     
-    APP_NAME = "AIJapaneseInput"
+    APP_NAME = "CNJPInput"
     REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
     
     @classmethod

@@ -13,6 +13,7 @@ import requests
 import multiprocessing
 import queue
 import time
+import traceback
 from abc import ABC, abstractmethod
 from typing import Optional, List
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
@@ -70,75 +71,83 @@ class CT2TranslatorEngine(BaseTranslatorEngine):
         super().__init__()
         self.translator = None
         self.sp = None
-        self.tokenizer = None  # HF tokenizer备用
-    
+        self.tokenizer = None
+        self.is_loaded = False
+        self.src_prefix = f"__{SOURCE_LANG}__"
+        self.tgt_prefix_token = f"__{TARGET_LANG}__"
+        
+    def log(self, msg):
+        try:
+            from model_config import get_model_config
+            cfg = get_model_config()
+            log_dir = os.path.dirname(cfg.CONFIG_PATH)
+            log_file = os.path.join(log_dir, "translator_debug.log")
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"[{timestamp}] [CT2Engine] {msg}\n")
+        except: pass
+        print(f"[CT2Engine] {msg}")
+
+    def _find_lang_tokens(self, model_dir):
+        """探测词典中真实的语言标识符格式 (有无双下划线)"""
+        voc_files = ["shared_vocabulary.txt", "vocabulary.txt", "shared_vocabulary.json", "vocabulary.json"]
+        voc_content = ""
+        for f_name in voc_files:
+            p = os.path.join(model_dir, f_name)
+            if os.path.exists(p):
+                try:
+                    with open(p, "r", encoding="utf-8", errors="ignore") as f_in:
+                        voc_content = f_in.read()
+                        break
+                except: continue
+        
+        def find_best(lang):
+            candidates = [f"__{lang}__", lang, lang.split('_')[0]]
+            for c in candidates:
+                if c in voc_content:
+                    print(f"[CT2Engine] 匹配到词典标识符: {c}")
+                    return c
+            return candidates[0] 
+
+        self.src_prefix = find_best(SOURCE_LANG)
+        self.tgt_prefix_token = find_best(TARGET_LANG)
+
     def load(self, model_path: str) -> bool:
         try:
             import ctranslate2
-            import os # Ensure os is imported locally if not globally available in scope, but it is globally.
+            import os
+            import traceback
             
-            # --- 自动探测子目录 ---
+            # --- 1. 智能路径探测 ---
+            actual_model_dir = model_path
             if os.path.isdir(model_path):
-                # 如果当前目录下没有 model.bin，则找子目录
                 if not os.path.exists(os.path.join(model_path, "model.bin")):
+                    found = False
                     for root, dirs, files in os.walk(model_path):
                         if "model.bin" in files:
-                            print(f"[CT2Engine] 修正模型路径: {model_path} -> {root}")
-                            model_path = root
+                            actual_model_dir = root
+                            found = True
                             break
-            # --------------------
+                    if not found: return False
 
-            print(f"[CT2Engine] 加载模型: {model_path}")
-            
-            # 检查设备
+            # --- 2. 加载核心翻译器 ---
             device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
-            print(f"[CT2Engine] 使用设备: {device}")
+            self.translator = ctranslate2.Translator(actual_model_dir, device=device)
+            self._find_lang_tokens(actual_model_dir)
             
-            # 加载翻译器
-            self.translator = ctranslate2.Translator(model_path, device=device)
-            
-            # 尝试加载分词器
-            # 方法1: SentencePiece模型
-            sp_paths = [
-                os.path.join(model_path, "sentencepiece.model"),
-                os.path.join(model_path, "sentencepiece.bpe.model"),
-                os.path.join(model_path, "spm.model"),
-            ]
-            
-            for sp_path in sp_paths:
+            # --- 3. 智能加载分词器 ---
+            sp_files = ["sentencepiece.bpe.model", "sentencepiece.model", "spm.model", "source.spm", "tokenizer.model"]
+            for f in sp_files:
+                sp_path = os.path.join(actual_model_dir, f)
                 if os.path.exists(sp_path):
                     import sentencepiece as spm
                     self.sp = spm.SentencePieceProcessor(sp_path)
-                    print(f"[CT2Engine] 使用SentencePiece: {sp_path}")
                     self.is_loaded = True
-                    print("[CT2Engine] 模型加载成功")
                     return True
-            
-            # 方法2: 使用shared_vocabulary.txt时，使用transformers tokenizer
-            vocab_path = os.path.join(model_path, "shared_vocabulary.txt")
-            if os.path.exists(vocab_path):
-                try:
-                    from transformers import NllbTokenizer
-                    # 尝试从原始NLLB模型加载tokenizer (使用固定路径)
-                    base_models_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
-                    original_model_path = os.path.join(base_models_dir, "nllb-200-distilled-600M")
-                    print(f"[CT2Engine] 尝试加载Tokenizer from: {original_model_path}")
-                    if os.path.exists(original_model_path):
-                        self.tokenizer = NllbTokenizer.from_pretrained(original_model_path)
-                        print(f"[CT2Engine] 使用HF Tokenizer")
-                        self.is_loaded = True
-                        print("[CT2Engine] 模型加载成功")
-                        return True
-                    else:
-                        print(f"[CT2Engine] 原始模型不存在: {original_model_path}")
-                except Exception as e:
-                    print(f"[CT2Engine] 加载HF Tokenizer失败: {e}")
-            
-            print(f"[CT2Engine] 警告: 未找到有效的分词器")
             return False
             
         except Exception as e:
-            print(f"[CT2Engine] 加载失败: {e}")
+            self.log(f"加载异常: {e}")
             self.is_loaded = False
             return False
     
@@ -162,33 +171,45 @@ class CT2TranslatorEngine(BaseTranslatorEngine):
                 # 根据可用的分词器进行分词
                 if self.sp is not None:
                     # 使用SentencePiece分词
-                    source_tokens = self.sp.encode(line, out_type=str)
-                    source_tokens = [SOURCE_LANG] + source_tokens + ["</s>"]
-                    target_prefix = [[TARGET_LANG]]
+                    tokens = self.sp.encode(line, out_type=str)
+                    
+                    # 使用探测到的前缀
+                    source_tokens = [self.src_prefix] + tokens + ["</s>"]
+                    target_prefix = [[self.tgt_prefix_token]]
                     
                     output = self.translator.translate_batch(
                         [source_tokens],
                         target_prefix=target_prefix,
-                        beam_size=5,
-                        num_hypotheses=1,
-                        no_repeat_ngram_size=3,
+                        beam_size=4,
+                        max_decoding_length=256,
+                        replace_unknowns=True
                     )
                     
-                    output_tokens = output[0].hypotheses[0][1:]
+                    output_tokens = output[0].hypotheses[0]
+                    # 移除开头的目标语言标识符
+                    if output_tokens and (output_tokens[0] == self.tgt_prefix_token or output_tokens[0].startswith("__")):
+                        output_tokens = output_tokens[1:]
+                    
                     result_line = self.sp.decode(output_tokens)
                 else:
                     # 使用HuggingFace Tokenizer
-                    self.tokenizer.src_lang = SOURCE_LANG
+                    def find_token_hf(lang_code):
+                        candidates = [lang_code, f"__{lang_code}__"]
+                        # HF tokenizer 通常有特定的 lang_code 处理
+                        return candidates[1]
+
+                    src_prefix = find_token_hf(SOURCE_LANG)
+                    tgt_prefix_token = find_token_hf(TARGET_LANG)
+                    
+                    self.tokenizer.src_lang = src_prefix
                     encoded = self.tokenizer(line, return_tensors=None)
                     source_tokens = self.tokenizer.convert_ids_to_tokens(encoded["input_ids"])
-                    target_prefix = [[TARGET_LANG]]
+                    target_prefix = [[tgt_prefix_token]]
                     
                     output = self.translator.translate_batch(
                         [source_tokens],
                         target_prefix=target_prefix,
-                        beam_size=5,
-                        num_hypotheses=1,
-                        no_repeat_ngram_size=3,
+                        beam_size=4
                     )
                     
                     output_tokens = output[0].hypotheses[0][1:]
@@ -200,7 +221,7 @@ class CT2TranslatorEngine(BaseTranslatorEngine):
             return '\n'.join(results)
             
         except Exception as e:
-            print(f"[CT2Engine] 翻译错误: {e}")
+            self.log(f"翻译错误: {e}\n{traceback.format_exc()}")
             return text
     
     def unload(self):
@@ -374,6 +395,14 @@ def inference_worker_process(model_path, engine_type, input_queue, output_queue)
     完全隔离，避免阻塞主进程
     """
     try:
+        import sys, os
+        from model_config import get_model_config
+        cfg = get_model_config()
+        log_dir = os.path.dirname(cfg.CONFIG_PATH)
+        sys.stdout = open(os.path.join(log_dir, "translator_process.log"), "a", encoding="utf-8")
+        sys.stderr = sys.stdout
+        print(f"[Tr-Proc] 正在启动翻译子进程: {engine_type}")
+        
         # 根据引擎类型创建引擎
         engine = create_translator_engine(engine_type)
         if engine is None:
@@ -419,8 +448,8 @@ class TranslatorEngine(QObject):
         self._engine: Optional[BaseTranslatorEngine] = None
         self._current_engine_type: Optional[str] = None
         
-        # 多进程模式（用于避免阻塞）
-        self._use_multiprocess = False
+        # 模式设置
+        self._use_multiprocess = False # 彻底禁用多进程，规避打包环境兼容性问题
         self._input_queue = None
         self._output_queue = None
         self._proc = None

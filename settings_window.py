@@ -14,13 +14,13 @@ from PyQt6.QtGui import QFont, QColor, QKeySequence, QKeyEvent
 
 from model_config import get_model_config, ASREngineType, TranslatorEngineType, ASROutputMode
 from startup_manager import StartupManager
-from model_downloader import get_downloader, DownloadStatus, MODELS
+from model_downloader import get_downloader, DownloadStatus
 from ui_components import HotkeyButton, ModelOptionWidget
-from ui_manager import FontManager
+from font_manager import FontManager
 
 # 应用信息
 APP_VERSION = "1.0.0"
-APP_NAME = "AI 日语输入法"
+APP_NAME = "中日说"
 AUTHOR_URL = "https://saaaai.com/"
 
 class SettingsWindow(QDialog):
@@ -68,14 +68,28 @@ class SettingsWindow(QDialog):
         # 2. 语音识别
         self._add_section("语音识别")
         
-        self.asr_item = ModelOptionWidget(
-            ASREngineType.SENSEVOICE_ONNX.value, 
-            "高性能 AI 中文识别引擎", 
-            "还可极速识别英文、日文"
-        )
-        self.asr_item.setChecked(True) # 只有一个选项，必须选中
-        self.asr_item.selected.connect(self._on_asr_engine_changed)
-        self.content_layout.addWidget(self.asr_item)
+        # 只要简单显示当前模型状态即可，无需可点击的 Widget
+        asr_status_layout = QHBoxLayout()
+        asr_status_icon = QLabel("✓")
+        asr_status_icon.setStyleSheet("color: #10b981; font-weight: bold; font-size: 16px;")
+        
+        asr_info_layout = QVBoxLayout()
+        asr_name = QLabel("内置 AI 语音引擎 (Sherpa-ONNX)")
+        asr_name.setStyleSheet("font-weight: bold; font-size: 14px;")
+        asr_desc = QLabel("高性能离线识别，支持中/英/日/韩/粤语，内置智能标点")
+        asr_desc.setStyleSheet("color: #888888; font-size: 12px;")
+        
+        asr_info_layout.addWidget(asr_name)
+        asr_info_layout.addWidget(asr_desc)
+        
+        asr_status_layout.addWidget(asr_status_icon)
+        asr_status_layout.addLayout(asr_info_layout)
+        asr_status_layout.addStretch()
+        
+        # 包装在一个容器中以便统一边距
+        asr_container = QWidget()
+        asr_container.setLayout(asr_status_layout)
+        self.content_layout.addWidget(asr_container)
         
         # 3. 输出模式
         self.content_layout.addWidget(self._create_label("输出模式"))
@@ -122,7 +136,21 @@ class SettingsWindow(QDialog):
         delay_layout.addStretch()
         self.content_layout.addLayout(delay_layout)
         
-        # 6. 外观设置
+        # 6. 默认启动模式
+        self._add_section("默认启动模式")
+        mode_select_layout = QHBoxLayout()
+        modes = [("asr", "中文直出"), ("asr_jp", "日文直出"), ("translation", "中日双显")]
+        self.mode_group, self.mode_buttons = self._create_option_group(
+            modes,
+            self.m_cfg.app_mode,
+            self._on_mode_changed,
+            horizontal=True
+        )
+        for btn in self.mode_buttons.values(): mode_select_layout.addWidget(btn)
+        mode_select_layout.addStretch()
+        self.content_layout.addLayout(mode_select_layout)
+
+        # 7. 外观设置
         
         self._add_section("外观设置")
         
@@ -279,12 +307,13 @@ class SettingsWindow(QDialog):
         # 更新特殊的按钮组样式
         for btn in self.output_buttons.values(): self._update_btn_style(btn, is_light)
         for btn in self.delay_buttons.values(): self._update_btn_style(btn, is_light)
+        for btn in self.mode_buttons.values(): self._update_btn_style(btn, is_light)
         for btn in self.theme_buttons.values(): self._update_btn_style(btn, is_light)
         for btn in self.scale_buttons.values(): self._update_btn_style(btn, is_light)
         for btn in self.font_buttons.values(): self._update_btn_style(btn, is_light)
         
         # 更新自定义组件的主题
-        self.asr_item.update_theme(is_light)
+        # self.asr_item.update_theme(is_light) # 已移除对象
         self.tr_selector.update_theme(is_light)
         self.hotkey_asr_btn.update_theme(is_light)
         self.hotkey_toggle_btn.update_theme(is_light)
@@ -420,6 +449,11 @@ class SettingsWindow(QDialog):
         self.m_cfg.tts_delay_ms = val
         self.m_cfg.save_config()
         
+    def _on_mode_changed(self, val):
+        self.m_cfg.app_mode = val
+        self.m_cfg.save_config()
+        self.settingsChanged.emit()
+        
     def _on_theme_changed(self, val):
         self.m_cfg.theme_mode = val
         self.m_cfg.save_config()
@@ -457,4 +491,5 @@ class SettingsWindow(QDialog):
         self.m_cfg.save_config()
         
     def _check_update(self):
-        pass
+        import webbrowser
+        webbrowser.open("https://github.com/caisiyang/input/releases/latest")

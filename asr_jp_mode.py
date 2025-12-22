@@ -6,7 +6,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve, pyqtProperty
 from PyQt6.QtGui import QColor, QPainter, QIcon, QFontMetrics, QPen, QBrush, QFont
 
-from ui_manager import FontManager, LOGO_PATH, HotkeyDialog, VoiceWaveform
+from font_manager import FontManager
+from ui_manager import LOGO_PATH, HotkeyDialog, VoiceWaveform
 from model_config import get_model_config, ASREngineType, TranslatorEngineType, ASROutputMode
 from startup_manager import StartupManager
 
@@ -168,6 +169,10 @@ class ASRJpModeWindow(QWidget):
         self.container_layout.addWidget(self.clear_btn)
         self.container_layout.addWidget(self.voice_btn)
 
+        # 核心：安装事件过滤器，让点击容器也能拖动窗口
+        self.container.installEventFilter(self)
+        self.display.installEventFilter(self)
+
         # State
         self.theme_mode = "Dark"
         self.window_scale = 1.0
@@ -184,6 +189,9 @@ class ASRJpModeWindow(QWidget):
         self.base_height = 50
         self.expanded_height = 100
         self.is_expanded = False
+
+        self._dragging = False
+        self._drag_pos = None
 
         # Auto-clear timer (5 seconds)
         self.auto_clear_timer = QTimer(self)
@@ -345,11 +353,12 @@ class ASRJpModeWindow(QWidget):
         current = self.display.text()
         if is_recording:
             self.auto_clear_timer.stop()
-            if current == self.m_cfg.get_prompt("idle_jp") or current == "":
-                self.update_segment(self.m_cfg.get_prompt("listening"))
+            # 立即重置显示内容，防止看到上一句的历史记录
+            self.update_segment(self.m_cfg.get_prompt("listening"))
         else:
             if current == self.m_cfg.get_prompt("listening"):
-                self.update_segment(self.m_cfg.get_prompt("idle_jp"))
+                # 说话结束但结果未出时，保持空白
+                self.update_segment("")
             elif current not in [self.m_cfg.get_prompt("idle_jp"), ""]:
                 self.auto_clear_timer.start()
 
@@ -357,22 +366,54 @@ class ASRJpModeWindow(QWidget):
         if self.waveform.isVisible():
             self.waveform.set_level(level)
 
+    def _start_drag(self, global_pos):
+        self._dragging = True
+        self._drag_pos = global_pos - self.pos()
+
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton: 
-            self._dragging, self._drag_pos = True, e.globalPosition().toPoint() - self.pos()
+            self._start_drag(e.globalPosition().toPoint())
     def mouseMoveEvent(self, e):
-        if hasattr(self, '_dragging') and self._dragging: 
+        if self._dragging and self._drag_pos: 
             self.move(e.globalPosition().toPoint() - self._drag_pos)
     def mouseReleaseEvent(self, e): self._dragging = False
+
+    def eventFilter(self, obj, event):
+        from PyQt6.QtCore import QEvent
+        if event.type() == QEvent.Type.MouseButtonPress:
+            if event.button() == Qt.MouseButton.LeftButton:
+                if obj not in [self.clear_btn, self.voice_btn]:
+                    self._start_drag(event.globalPosition().toPoint())
+                    if obj == self.display: return True
+        
+        elif event.type() == QEvent.Type.MouseMove:
+            if self._dragging:
+                self.move(event.globalPosition().toPoint() - self._drag_pos)
+                return True
+                
+        elif event.type() == QEvent.Type.MouseButtonRelease:
+            if event.button() == Qt.MouseButton.LeftButton:
+                self._dragging = False
+                
+        return super().eventFilter(obj, event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._dragging = False
+        self.activateWindow()
+        self.raise_()
 
     def contextMenuEvent(self, event):
         self.show_context_menu(event.globalPos())
 
     def show_context_menu(self, global_pos):
-        menu = QMenu() # 不带 parent 以确保即便窗口隐藏时也能正常显示菜单
+        # 强制激活窗口
+        self.activateWindow()
+        self.raise_()
         
+        menu = QMenu() 
         mode_menu = menu.addMenu("应用模式")
-        modes = [("asr", "语音输入模式"), ("asr_jp", "日语语音模式"), ("translation", "文字翻译模式")]
+        modes = [("asr", "中文直出模式"), ("asr_jp", "日文直出模式"), ("translation", "中日双显模式")]
         current_mode = self.m_cfg.app_mode
         for m_id, m_name in modes:
             display_name = f"{m_name}{'        ✔' if m_id == current_mode else ''}"
