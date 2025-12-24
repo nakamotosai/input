@@ -17,6 +17,11 @@ import os
 
 # 配置日志输出到文件
 def _setup_logging():
+    # 只有主进程才进行日志初始化
+    import multiprocessing
+    if multiprocessing.current_process().name != 'MainProcess':
+        return
+
     from model_config import get_model_config
     cfg = get_model_config()
     log_file = os.path.join(cfg.DATA_DIR, "tts_worker.log")
@@ -33,12 +38,11 @@ def _setup_logging():
         # 检查 ffmpeg
         import subprocess
         try:
-            res = subprocess.run(['ffmpeg', '-version'], creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True)
+            # 增加 CREATE_NO_WINDOW 避免弹出黑框
+            subprocess.run(['ffmpeg', '-version'], creationflags=0x08000000, capture_output=True)
             logging.info(f"ffmpeg 探测成功")
         except:
             logging.error("ffmpeg 未找到，pydub 将无法处理 MP3。")
-        
-        print(f"[TTS] 日志已启用: {log_file}")
     except Exception as e:
         print(f"[TTS] 日志初始化失败: {e}")
 
@@ -200,8 +204,18 @@ class TTSWorker:
                 self._refresh_device()
 
                 # 4. 播放
-                logging.info(f"[TTS] 开始播放音频流... 长度: {len(samples)}")
-                sd.play(samples, samplerate=sample_rate, device=self._output_device)
+                logging.info(f"[TTS] 开始播放音频流... 长度: {len(samples)} (设备索引: {self._output_device})")
+                
+                try:
+                    sd.play(samples, samplerate=sample_rate, device=self._output_device)
+                except Exception as e:
+                    # 关键修复：如果指定设备失效（-9996），自动回退到系统默认输出设备
+                    logging.warning(f"[TTS] 指定设备播放失败 ({e}), 正在尝试系统默认输出设备...")
+                    try:
+                        sd.play(samples, samplerate=sample_rate, device=None)
+                    except Exception as e2:
+                        logging.error(f"[TTS] 全部播放设备尝试失败: {e2}")
+                        return
                 
                 # 等待播放完成或被中断
                 while sd.get_stream().active:
