@@ -21,6 +21,7 @@ from font_manager import FontManager
 # 应用信息
 APP_VERSION = "1.0.0"
 APP_NAME = "中日说"
+OFFICIAL_SITE_URL = "https://input.saaaai.com/"
 AUTHOR_URL = "https://saaaai.com/"
 
 class SettingsWindow(QDialog):
@@ -34,30 +35,73 @@ class SettingsWindow(QDialog):
         self.m_cfg = get_model_config()
         self.tr_engine = tr_engine
         self.downloader = get_downloader()
+        
+        # 拖动窗口逻辑
+        self._drag_pos = None
+        self._resize_edge = None  # 边缘调整大小
+        self._edge_margin = 8  # 边缘调整区域宽度
+        
         self._setup_ui()
         self._update_all_styles() # Apply current theme
         self._init_engine_status() # 初始化引擎显示状态
-    
+
     def _setup_ui(self):
         self.setWindowTitle("设置")
-        self.setWindowFlags(Qt.WindowType.WindowCloseButtonHint)
-        self.setMinimumSize(540, 750)
-        self.setMaximumWidth(600)
+        # 无边框窗口
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setMouseTracking(True)
         
-        # 主布局
+        self.setMinimumSize(480, 500)
+        self.resize(540, 650)
+        
+        # 主容器
+        self.main_container = QFrame(self)
+        self.main_container.setObjectName("MainContainer")
+        
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        main_layout.addWidget(self.main_container)
         
-        # 滚动区域
+        # 容器内布局
+        container_layout = QVBoxLayout(self.main_container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(0)
+        
+        # 1. 自定义标题栏 (整合进布局)
+        self.title_bar = QWidget()
+        self.title_bar.setObjectName("TitleBar")
+        self.title_bar.setFixedHeight(45)
+        title_layout = QHBoxLayout(self.title_bar)
+        title_layout.setContentsMargins(15, 0, 10, 0)
+        
+        title_label = QLabel("设置")
+        title_label.setObjectName("WindowTitle")
+        
+        self.close_btn = QPushButton("×")
+        self.close_btn.setObjectName("CloseButton")
+        self.close_btn.setFixedSize(30, 30)
+        self.close_btn.clicked.connect(self.close)
+        
+        title_layout.addWidget(title_label)
+        title_layout.addStretch()
+        title_layout.addWidget(self.close_btn)
+        
+        container_layout.addWidget(self.title_bar)
+        
+        # 2. 滚动区域
         self.scroll = QScrollArea()
+        self.scroll.setObjectName("MainScrollArea")
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setMouseTracking(True)  # 启用鼠标跟踪
         
         # 内容容器
         self.content = QWidget()
+        self.content.setObjectName("ContentWidget")
+        self.content.setMouseTracking(True)  # 启用鼠标跟踪
         self.content_layout = QVBoxLayout(self.content)
-        self.content_layout.setContentsMargins(25, 20, 25, 20)
+        self.content_layout.setContentsMargins(25, 10, 20, 25)
         self.content_layout.setSpacing(20)
         
         # 1. 更新按钮
@@ -118,12 +162,12 @@ class SettingsWindow(QDialog):
         # 5. 语音合成
         self._add_section("语音合成")
         
-        self.auto_tts_check = QCheckBox("翻译后自动朗读日语")
+        self.auto_tts_check = QCheckBox("翻译后自动朗读日语（需联网）")
         self.auto_tts_check.setChecked(self.m_cfg.auto_tts)
         self.auto_tts_check.stateChanged.connect(self._on_auto_tts_changed)
         self.content_layout.addWidget(self.auto_tts_check)
         
-        self.content_layout.addWidget(self._create_label("朗读延迟 (蓝牙耳机建议5秒)"))
+        self.content_layout.addWidget(self._create_label("朗读延迟 (如果被hands-free影响请选5秒)"))
         delay_layout = QHBoxLayout()
         delays = [(0, "0秒"), (1000, "1秒"), (3000, "3秒"), (5000, "5秒"), (7000, "7秒")]
         self.delay_group, self.delay_buttons = self._create_option_group(
@@ -204,17 +248,7 @@ class SettingsWindow(QDialog):
         self.content_layout.addWidget(self._create_label("显示/隐藏"))
         self.content_layout.addWidget(self.hotkey_toggle_btn)
         
-        # 8. AI 个性
-        self._add_section("AI 个性风格")
-        self.personality_group = QButtonGroup(self)
-        for i, (pid, pname) in enumerate(self.m_cfg.get_personality_schemes()):
-            radio = QRadioButton(pname)
-            radio.setChecked(self.m_cfg.personality.data.get("current_scheme") == pid)
-            radio.toggled.connect(lambda c, p=pid: self._on_personality_changed(p) if c else None)
-            self.personality_group.addButton(radio, i)
-            self.content_layout.addWidget(radio)
-            
-        # 9. 启动与关于
+        # 8. 启动与关于
         self._add_section("其他")
         
         self.autostart_check = QCheckBox("开机自动启动")
@@ -223,7 +257,7 @@ class SettingsWindow(QDialog):
         self.content_layout.addWidget(self.autostart_check)
         
         self.show_check = QCheckBox("启动时显示主窗口")
-        self.show_check.setChecked(self.m_cfg.data.get("show_on_start", False))
+        self.show_check.setChecked(self.m_cfg.get_show_on_start())
         self.show_check.stateChanged.connect(self._on_show_start_changed)
         self.content_layout.addWidget(self.show_check)
         
@@ -234,7 +268,7 @@ class SettingsWindow(QDialog):
 
         self.content_layout.addStretch()
         self.scroll.setWidget(self.content)
-        main_layout.addWidget(self.scroll)
+        container_layout.addWidget(self.scroll)
 
     # === 样式管理 ===
     
@@ -269,16 +303,67 @@ class SettingsWindow(QDialog):
         self.setFont(font)
         
         style = f"""
-            QDialog {{ background-color: {bg_color}; color: {text_color}; font-family: '{font_family}', 'Segoe UI', system-ui, sans-serif; }}
-            QScrollArea {{ border: none; background-color: {bg_color}; }}
-            QWidget {{ background-color: {bg_color}; color: {text_color}; font-family: '{font_family}', 'Segoe UI', system-ui, sans-serif; }}
-            QCheckBox {{ color: {text_color}; spacing: 8px; font-size: 13px; }}
+            QDialog {{ background: transparent; }}
+            
+            #MainContainer {{
+                background-color: {bg_color};
+                border: 1px solid {border_color};
+            }}
+            
+            #TitleBar {{
+                background-color: {bg_color};
+            }}
+            
+            #WindowTitle {{
+                color: {title_color};
+                font-size: 14px;
+                font-weight: bold;
+                background-color: {bg_color};
+            }}
+            
+            #CloseButton {{
+                background-color: {bg_color};
+                color: {sub_text};
+                font-size: 20px;
+                border: none;
+            }}
+            #CloseButton:hover {{
+                background-color: #e81123;
+                color: white;
+            }}
+            
+            #MainScrollArea {{ 
+                border: none; 
+                background-color: {bg_color}; 
+            }}
+            #ContentWidget {{ 
+                background-color: {bg_color}; 
+            }}
+            
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 8px;
+                margin: 4px 2px 4px 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {border_color};
+                min-height: 30px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {accent};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
+            
+            QCheckBox {{ color: {text_color}; spacing: 8px; font-size: 13px; background: transparent; }}
             QCheckBox::indicator {{ width: 18px; height: 18px; border: 2px solid {border_color}; border-radius: 4px; background: {item_bg}; }}
             QCheckBox::indicator:checked {{ background: {accent}; border: 2px solid {accent}; }}
-            QRadioButton {{ color: {text_color}; spacing: 8px; font-size: 13px; }}
+            
+            QRadioButton {{ color: {text_color}; spacing: 8px; font-size: 13px; background: transparent; }}
             QRadioButton::indicator {{ width: 18px; height: 18px; border: 2px solid {border_color}; border-radius: 10px; background: {item_bg}; }}
             QRadioButton::indicator:checked {{ background: {accent}; border: 2px solid {accent}; }}
-            QLabel {{ color: {text_color}; }}
+            
+            QLabel {{ color: {text_color}; background: transparent; }}
             
             QLabel#SectionTitle {{
                 color: {title_color};
@@ -487,9 +572,81 @@ class SettingsWindow(QDialog):
         StartupManager.set_enabled(bool(state))
         
     def _on_show_start_changed(self, state):
-        self.m_cfg.data["show_on_start"] = bool(state)
-        self.m_cfg.save_config()
+        self.m_cfg.set_show_on_start(bool(state))
         
     def _check_update(self):
         import webbrowser
-        webbrowser.open("https://github.com/caisiyang/input/releases/latest")
+        webbrowser.open(OFFICIAL_SITE_URL)
+
+    # --- 窗口拖动与调整大小实现 ---
+    def _get_resize_edge(self, pos):
+        """ 检测鼠标是否在边缘调整区域 """
+        m = self._edge_margin
+        rect = self.rect()
+        x, y = pos.x(), pos.y()
+        edge = ""
+        if y < m: edge += "N"
+        elif y > rect.height() - m: edge += "S"
+        if x < m: edge += "W"
+        elif x > rect.width() - m: edge += "E"
+        return edge if edge else None
+    
+    def leaveEvent(self, event):
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self._resize_edge = None
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            edge = self._get_resize_edge(event.pos())
+            if edge:
+                self._resize_edge = edge
+                self._drag_pos = event.globalPosition().toPoint()
+            else:
+                self._resize_edge = None
+                self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if not event.buttons():
+            # 更新鼠标样式
+            edge = self._get_resize_edge(event.pos())
+            if edge in ("N", "S"): self.setCursor(Qt.CursorShape.SizeVerCursor)
+            elif edge in ("E", "W"): self.setCursor(Qt.CursorShape.SizeHorCursor)
+            elif edge in ("NE", "SW"): self.setCursor(Qt.CursorShape.SizeBDiagCursor)
+            elif edge in ("NW", "SE"): self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+            else: self.setCursor(Qt.CursorShape.ArrowCursor)
+            return
+        
+        if event.buttons() == Qt.MouseButton.LeftButton:
+            if self._resize_edge and self._drag_pos:
+                # 调整大小
+                delta = event.globalPosition().toPoint() - self._drag_pos
+                self._drag_pos = event.globalPosition().toPoint()
+                geo = self.geometry()
+                min_w, min_h = self.minimumWidth(), self.minimumHeight()
+                
+                if "E" in self._resize_edge:
+                    geo.setWidth(max(min_w, geo.width() + delta.x()))
+                if "S" in self._resize_edge:
+                    geo.setHeight(max(min_h, geo.height() + delta.y()))
+                if "W" in self._resize_edge:
+                    new_w = max(min_w, geo.width() - delta.x())
+                    if new_w != geo.width():
+                        geo.setLeft(geo.left() + (geo.width() - new_w))
+                        geo.setWidth(new_w)
+                if "N" in self._resize_edge:
+                    new_h = max(min_h, geo.height() - delta.y())
+                    if new_h != geo.height():
+                        geo.setTop(geo.top() + (geo.height() - new_h))
+                        geo.setHeight(new_h)
+                
+                self.setGeometry(geo)
+            elif self._drag_pos is not None:
+                # 拖动窗口
+                self.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pos = None
+        self._resize_edge = None

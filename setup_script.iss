@@ -4,7 +4,7 @@
 #define MyJapaneseName "日中インプット"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "nakamotosai"
-#define MyAppURL "https://github.com/caisiyang/input"
+#define MyAppURL "https://github.com/nakamotosai/input"
 #define MyAppExeName "CNJP_Input.exe"
 #define MyIconName "logo.ico"
 
@@ -45,7 +45,7 @@ Name: "chinesesimplified"; MessagesFile: "compiler:Default.isl"
 Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
 ; === 核心打包文件 (来自 PyInstaller dist 目录) ===
@@ -53,8 +53,8 @@ Source: "dist\CNJP_Input\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdi
 Source: "{#MyIconName}"; DestDir: "{app}"; Flags: ignoreversion
 
 ; === 字体安装 ===
-Source: "fonts\NotoSansSC-Regular.otf"; DestDir: "{autofonts}"; FontInstall: "Noto Sans SC"; Flags: onlyifdestfileexists uninsneveruninstall
-Source: "fonts\NotoSerifSC-Regular.otf"; DestDir: "{autofonts}"; FontInstall: "Noto Serif SC"; Flags: onlyifdestfileexists uninsneveruninstall
+Source: "fonts\NotoSansSC-Regular.otf"; DestDir: "{autofonts}"; FontInstall: "Noto Sans SC"; Flags: onlyifdoesntexist uninsneveruninstall
+Source: "fonts\NotoSerifSC-Regular.otf"; DestDir: "{autofonts}"; FontInstall: "Noto Serif SC"; Flags: onlyifdoesntexist uninsneveruninstall
 
 [Icons]
 ; 开始菜单与桌面快捷方式

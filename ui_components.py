@@ -441,7 +441,7 @@ class TranslatorMonitorWidget(QFrame):
         color = error_color
         if "运行中" in status_text or "Ready" in status_text:
             color = ready_color
-        elif "加载中" in status_text or "Loading" in status_text:
+        elif "加载中" in status_text or "Loading" in status_text or "切换" in status_text:
             color = loading_color
             
         font_name = FontManager.get_correct_family(get_model_config().font_name)
@@ -462,6 +462,8 @@ class TranslatorMonitorWidget(QFrame):
         
         if "完成" in status_text or "就绪" in status_text or "成功" in status_text or status_text == "idle":
             self.status_val.setText("运行中 (Ready)")
+        elif "切换" in status_text:
+            self.status_val.setText(status_text)
         elif "加载" in status_text or "loading" in status_text:
             self.status_val.setText("加载中 (Loading...)")
         else:
@@ -537,20 +539,34 @@ class TranslatorSelectorWidget(QWidget):
         self.progress.setStyleSheet(prog_style)
 
     def sync_status(self):
-        current_id = self.tr_engine.current_engine_id
-        is_ready = self.tr_engine.local_is_ready if current_id != "online" else True
-        self.monitor.set_status(current_id, "就绪" if is_ready else "正在初始化，请稍等几秒钟...", is_ready)
+        """同步 UI 状态显示，确保标题显示正确的目标引擎"""
+        target_id = self.m_cfg.current_translator_engine
+        backend_id = self.tr_engine.current_engine_id
         
-        config_id = self.m_cfg.current_translator_engine
+        # 检查后端引擎是否已经切换到了目标引擎且已就绪
+        is_ready = (backend_id == target_id) and (self.tr_engine.local_is_ready if target_id != "online" else True)
         
-        # 优先级：正在切换的目标 > 当前运行的引擎 > 配置记录
-        active_id = self.pending_engine_id if self.pending_engine_id else (current_id if current_id else config_id)
-        
-        self.btn_google.setChecked(active_id == "online")
-        self.btn_nllb.setChecked(active_id == TranslatorEngineType.NLLB_600M_CT2.value)
+        # 只有当后端已经匹配目标时，才拉取后端的就绪状态显示
+        # 否则（正在切换中）维持 Monitor 现状，避免被后端旧状态的 ID 覆盖
+        if is_ready:
+            self.pending_engine_id = None
+            self.monitor.set_status(target_id, "就绪", True)
+        elif not self.pending_engine_id:
+            # 仅在非点击切换的静态状态下（如刚打开设置面板）同步基础信息
+            status_desc = "正在初始化..." if target_id != "online" else "运行中"
+            self.monitor.set_status(target_id, status_desc, is_ready)
+
+        # 始终同步按钮高亮，以意图为主
+        is_online = (target_id == "online")
+        self.btn_google.setChecked(is_online)
+        self.btn_nllb.setChecked(not is_online)
         
         if not self.downloader.is_model_installed("nllb_600m"):
             self.monitor.info_lbl.setText("提示: NLLB 600M 本地模型暂未下载")
+        else:
+            # 如果已安装，确保清除旧的“未下载”提示
+            if "暂未下载" in self.monitor.info_lbl.text():
+                self.monitor.info_lbl.setText("")
 
         self._update_button_styles()
 
@@ -607,7 +623,7 @@ class TranslatorSelectorWidget(QWidget):
                 self._start_download("nllb_600m")
                 return
         
-        self.monitor.set_status(engine_id, "正在加载...", False)
+        self.monitor.set_status(engine_id, "正在切换模式，请稍等...", False)
         self.pending_engine_id = engine_id
         self.m_cfg.current_translator_engine = engine_id
         self.m_cfg.save_config()
@@ -681,7 +697,7 @@ class TeachingTip(QFrame):
     """新手教学气泡提示"""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         
         layout = QVBoxLayout(self)
         layout.setContentsMargins(15, 12, 15, 12)

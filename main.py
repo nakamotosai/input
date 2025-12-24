@@ -6,7 +6,7 @@ from model_config import get_model_config, ASROutputMode, TranslatorEngineType
 from asr_manager import ASRManager
 from asr_mode import ASRModeWindow
 from asr_jp_mode import ASRJpModeWindow
-from ui_manager import TranslatorWindow
+from ui_manager import TranslatorWindow, FloatingVoiceIndicator
 from hotkey_manager import HotkeyManager
 from tray_icon import AppTrayIcon
 from audio_recorder import AudioRecorder
@@ -57,10 +57,14 @@ class AppController(QObject):
             self.tr_window = TranslatorWindow()
             self.window = self.tr_window
             
-        self.window.show() # SHOW IMMEDIATELY!
+        if self.m_cfg.get_show_on_start():
+            self.window.show()
         
         self.tray = AppTrayIcon()
         self.tray.set_mode_checked(self.app_mode)
+        
+        # 悬浮录音指示器 (隐藏界面时使用)
+        self.voice_indicator = FloatingVoiceIndicator()
         
         # 3. Deferred initialization for high performance
         QTimer.singleShot(50, self._deferred_init)
@@ -73,6 +77,7 @@ class AppController(QObject):
         self.tip = TeachingTip()
         self.tip.show_beside(self.window)
         self.m_cfg.tip_shown = True # Mark as shown
+        self.m_cfg.save_config()
 
     def _deferred_init(self):
         """Second phase of loading: create background windows and start engines"""
@@ -187,13 +192,19 @@ class AppController(QObject):
         self.m_cfg.app_mode = mode_id # 这会自动触发 save_config
 
     def on_asr_down(self):
-        # 录音开始时不强制抢占焦点，防止干扰按钮的鼠标释放事件
         self.window.update_recording_status(True)
         self.audio_recorder.start_recording()
+        
+        # 如果当前是 ASR 模式且界面是隐藏的，显示悬浮指示器
+        if self.app_mode in ["asr", "asr_jp"] and not self.window.isVisible():
+            self.voice_indicator.show()
 
     def on_asr_up(self):
         self.window.update_recording_status(False)
         self.audio_recorder.stop_recording()
+        
+        # 隐藏悬浮指示器
+        self.voice_indicator.hide()
         
         # 中日双显模式：录音结束后保持窗口焦点
         if self.app_mode == "translation":
@@ -333,16 +344,15 @@ class AppController(QObject):
     def handle_audio_level(self, level):
         if hasattr(self.window, "update_audio_level"):
             self.window.update_audio_level(level)
+        # 同时更新悬浮指示器的音量
+        if self.voice_indicator and self.voice_indicator.isVisible():
+            self.voice_indicator.set_level(level)
 
     def on_worker_status_changed(self, status):
         # 过滤：如果当前是纯中文 ASR 模式，忽略翻译引擎的状态信号
-        # 翻译引擎的状态信号通常是 "loading", "idle", 或具体的模型名
-        # ASR 相关的信号通常包含 "asr_" 前缀或 "idle"
-        
         is_trans_status = status in ["loading"] or status in [e.value for e in TranslatorEngineType] or "翻译" in status or "切换" in status
         
         if self.app_mode == "asr" and is_trans_status:
-            # 中文 ASR 模式不需要翻译引擎的状态
             return
             
         for win in self.all_windows:
@@ -376,7 +386,6 @@ class AppController(QObject):
             if hasattr(win, 'current_font_name'):
                 win.current_font_name = font_name
             if hasattr(win, 'apply_scaling'):
-                # Safe access to attributes for scaling
                 scale = getattr(win, 'window_scale', 1.0)
                 factor = getattr(win, 'font_size_factor', 1.0)
                 win.apply_scaling(scale, factor, font_name == "思源宋体")
@@ -414,32 +423,22 @@ class AppController(QObject):
 
     def open_settings(self):
         """打开设置窗口"""
-        # 隐藏主窗口
         active_window = self.window
         active_window.hide()
         
         self._settings_window = SettingsWindow(self.tr_engine)
-        
-        # 实时响应变更
         self._settings_window.settingsChanged.connect(self._apply_global_settings)
-        
-        # 连接引擎切换信号 - 关键：这会触发实际的引擎加载
         self._settings_window.engineChangeRequested.connect(self.sig_change_engine.emit)
-        
-        # 连接引擎加载状态信号
         self.tr_worker.status_changed.connect(self._on_engine_status_for_settings)
         
         self._settings_window.exec()
         
-        # 断开信号连接，防止内存泄漏
         try:
             self.tr_worker.status_changed.disconnect(self._on_engine_status_for_settings)
         except:
             pass
         
         self._settings_window = None
-        
-        # 恢复显示
         QTimer.singleShot(100, active_window.show)
     
     def _on_engine_status_for_settings(self, status: str):
@@ -453,10 +452,8 @@ class AppController(QObject):
     def _apply_global_settings(self):
         """应用全局设置"""
         print("[Main] 应用全局配置...")
-        # 更新快捷键
         current_asr = self.hotkey_mgr.asr_key_str
         current_toggle = self.hotkey_mgr.toggle_ui_str
-        # 使用正则确保只替换独立的 'win' 或 'meta'，不破坏已有的 'windows'
         def normalize_hotkey(s):
             s = s.lower()
             s = re.sub(r'\bmeta\b', 'windows', s)
@@ -469,10 +466,8 @@ class AppController(QObject):
             print(f"[Main] 检测到热键变更: {current_asr}->{new_asr}, {current_toggle}->{new_toggle}")
             self.hotkey_mgr.stop()
             self.hotkey_mgr.set_hotkeys(self.m_cfg.hotkey_asr, self.m_cfg.hotkey_toggle_ui)
-            # 使用 QTimer 确保异步重启，避免卡顿
             QTimer.singleShot(100, self.hotkey_mgr.start)
         
-        # 刷新所有窗口外观
         theme = self.m_cfg.theme_mode
         scale = self.m_cfg.window_scale
         font = self.m_cfg.font_name
@@ -482,12 +477,9 @@ class AppController(QObject):
             if hasattr(win, "set_scale_factor"): win.set_scale_factor(scale)
             if hasattr(win, "set_font_name"): win.set_font_name(font)
 
-        # 翻译引擎的切换现在由设置窗口直接处理
-        # 不再在这里触发，避免重复加载/卸载
         self._last_engine_id = self.m_cfg.current_translator_engine
 
     def save_config(self):
-        """DEPRECATED: Now handled directly by m_cfg. setters"""
         self.m_cfg.save_config()
 
     def on_tray_activated(self, reason):
@@ -498,7 +490,6 @@ class AppController(QObject):
         elif reason == QSystemTrayIcon.ActivationReason.Context: # Right Click
             active_win = self.get_active_window()
             if active_win:
-                # 在显示菜单前激活窗口，这是 Windows 下托盘菜单能由于失去焦点而关闭的关键
                 active_win.activateWindow()
                 active_win.show_context_menu(QCursor.pos())
 
@@ -525,29 +516,28 @@ class AppController(QObject):
         sys.exit(self.app.exec())
 
 if __name__ == "__main__":
-    # === 处理打包后的 stdout/stderr 缺失问题 (解决 AttributeError: 'NoneType' object has no attribute 'write') ===
     import sys
     import os
     if getattr(sys, 'frozen', False):
-        # 如果是打包后的环境，且没有控制台
-        if sys.stdout is None:
-            sys.stdout = open(os.devnull, 'w')
-        if sys.stderr is None:
-            sys.stderr = open(os.devnull, 'w')
+        from model_config import get_model_config
+        cfg = get_model_config()
+        log_path = os.path.join(cfg.DATA_DIR, "runtime_error.log")
+        try:
+            sys.stdout = open(log_path, 'a', encoding='utf-8')
+            sys.stderr = sys.stdout
+        except:
+            pass
             
-        # === 核心修复：彻底封杀 ffmpeg 等子进程产生的黑色闪窗 ===
         import subprocess
         _real_popen = subprocess.Popen
         def _silent_popen(*args, **kwargs):
             if 'creationflags' not in kwargs:
-                # 强制添加“不创建窗口”标记
                 kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
             return _real_popen(*args, **kwargs)
         subprocess.Popen = _silent_popen
             
     multiprocessing.freeze_support()
     
-    # 强制切换工作目录到脚本所在目录
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
     
@@ -557,35 +547,28 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     
-    # === 单实例检查 ===
-    # 尝试连接已存在的实例
     server_name = "CNJP_Input_Server"
     socket = QLocalSocket()
     socket.connectToServer(server_name)
     
     if socket.waitForConnected(500):
-        # 连接成功，说明已有实例在运行 → 唤醒它并退出
         print("已有实例运行中，正在唤醒...")
         socket.write(b"SHOW")
         socket.waitForBytesWritten(1000)
         socket.disconnectFromServer()
         sys.exit(0)
     
-    # 没有已存在的实例 → 启动服务监听
     server = QLocalServer()
-    # 清理可能残留的旧服务（如程序崩溃后遗留）
     QLocalServer.removeServer(server_name)
     
     if not server.listen(server_name):
         print(f"单实例服务启动失败: {server.errorString()}")
     
-    # 启动主程序
     from model_config import get_model_config
     cfg = get_model_config()
     
     controller = AppController(app)
     
-    # 绑定唤醒信号处理
     def handle_new_connection():
         client = server.nextPendingConnection()
         if client and client.waitForReadyRead(100):
@@ -596,4 +579,3 @@ if __name__ == "__main__":
     server.newConnection.connect(handle_new_connection)
     
     sys.exit(app.exec())
-

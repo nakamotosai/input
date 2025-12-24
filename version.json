@@ -1,6 +1,7 @@
 {
     "latest_version": "1.0.0",
-    "release_date": "2025-12-21",
-    "download_url": "https://github.com/caisiyang/input/releases/latest",
-    "changelog": "1. 初始版本发布 (中日说 v1.0.0)\n2. 集成 ASR 与翻译功能\n3. 支持在线/离线模型自动下载"
+    "release_date": "2025-12-24",
+    "download_url": "https://hf-mirror.com/nakamotosai/cnjp-input/resolve/main/cnjp_input_setup_v1.0.0.exe",
+    "download_url_international": "https://huggingface.co/nakamotosai/cnjp-input/resolve/main/cnjp_input_setup_v1.0.0.exe",
+    "changelog": "1. 初始版本发布 (中日说 v1.0.0)\n2. 集成 ASR 与翻译功能\n3. 支持在线/离线模型自动下载\n4. 支持 GPU 加速翻译"
 }

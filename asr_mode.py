@@ -7,9 +7,10 @@ from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurv
 from PyQt6.QtGui import QColor, QPainter, QIcon, QFontMetrics, QPen, QBrush, QFont
 
 from font_manager import FontManager
-from ui_manager import LOGO_PATH, HotkeyDialog, VoiceWaveform
+from ui_manager import LOGO_PATH, HotkeyDialog, VoiceWaveform, ScaledTextEdit, ClearButton, SlotMachineLabel
 from model_config import get_model_config, ASREngineType, TranslatorEngineType, ASROutputMode
 from startup_manager import StartupManager
+from asr_manager import ASRManager
 
 # Default fallbacks if needed
 DEFAULT_PLACEHOLDER = "按住大写键说话"
@@ -18,11 +19,13 @@ DEFAULT_LISTENING = "正在聆听..."
 class ASRIconButton(QPushButton):
     def __init__(self, parent=None, icon_type="mic"):
         super().__init__(parent)
-        self.setFixedSize(24, 24)
+        self.setFixedSize(50, 50)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.icon_type = icon_type
         self._is_recording = False
         self._pulse_radius = 0
+        self._pulse_max = 20
+        self.scale = 1.0
         self.bg_color = QColor(255, 255, 255, 25)
         self.icon_color = QColor(200, 200, 200)
         self.pulse_color = QColor(255, 60, 60, 100)
@@ -31,8 +34,19 @@ class ASRIconButton(QPushButton):
         self.pulse_anim.setDuration(1200)
         self.pulse_anim.setLoopCount(-1)
         self.pulse_anim.setStartValue(0)
-        self.pulse_anim.setEndValue(15)
+        self.pulse_anim.setEndValue(20) 
         self.pulse_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def apply_scale(self, scale):
+        self.scale = scale
+        size = int(50 * scale)
+        self.setFixedSize(size, size)
+        self._pulse_max = 20 * scale
+        self.pulse_anim.stop()
+        self.pulse_anim.setEndValue(self._pulse_max)
+        if self._is_recording:
+            self.pulse_anim.start()
+        self.update()
 
     def set_recording(self, recording):
         self._is_recording = recording
@@ -56,10 +70,10 @@ class ASRIconButton(QPushButton):
         
         if self._is_recording and self.icon_type == "mic":
             painter.setPen(Qt.PenStyle.NoPen)
-            alpha = int(100 * (1.0 - self._pulse_radius / 15.0))
+            alpha = int(100 * (1.0 - self._pulse_radius / self._pulse_max if self._pulse_max > 0 else 0))
             c = QColor(self.pulse_color.red(), self.pulse_color.green(), self.pulse_color.blue(), alpha)
             painter.setBrush(QBrush(c))
-            r = int(self._pulse_radius + 5)
+            r = int(self._pulse_radius + 5 * self.scale)
             painter.drawEllipse(center, r, r)
             
         painter.setPen(Qt.PenStyle.NoPen)
@@ -67,24 +81,30 @@ class ASRIconButton(QPushButton):
             painter.setBrush(QBrush(self.pulse_color))
         else:
             painter.setBrush(QBrush(self.bg_color))
-        painter.drawEllipse(center, 10, 10)
+        r_inner = int(12 * self.scale)
+        painter.drawEllipse(center, r_inner, r_inner)
         
         icon_c = QColor("white") if (self._is_recording and self.icon_type == "mic") else self.icon_color
         
         if self.icon_type == "clear":
-            pen = QPen(icon_c, 2)
+            pen = QPen(icon_c, max(1, int(2 * self.scale)))
             painter.setPen(pen)
-            painter.drawLine(center.x()-4, center.y()-4, center.x()+4, center.y()+4)
-            painter.drawLine(center.x()+4, center.y()-4, center.x()-4, center.y()+4)
+            off = int(4 * self.scale)
+            painter.drawLine(center.x()-off, center.y()-off, center.x()+off, center.y()+off)
+            painter.drawLine(center.x()+off, center.y()-off, center.x()-off, center.y()+off)
         else:
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QBrush(icon_c))
-            painter.drawRoundedRect(center.x()-3, center.y()-7, 6, 10, 3, 3)
+            iw = int(6 * self.scale)
+            ih = int(10 * self.scale)
+            painter.drawRoundedRect(center.x()-iw//2, center.y()-int(7*self.scale), iw, ih, int(3*self.scale), int(3*self.scale))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QColor(icon_c.red(), icon_c.green(), icon_c.blue(), 200))
-            painter.drawArc(center.x()-5, center.y()-3, 10, 8, 180*16, 180*16)
-            painter.drawLine(center.x(), center.y()+5, center.x(), center.y()+7)
-            painter.drawLine(center.x()-3, center.y()+7, center.x()+3, center.y()+7)
+            painter.setPen(QPen(QColor(icon_c.red(), icon_c.green(), icon_c.blue(), 200), max(1, int(1.5*self.scale))))
+            aw = int(10 * self.scale)
+            ah = int(8 * self.scale)
+            painter.drawArc(center.x()-aw//2, center.y()-int(3*self.scale), aw, ah, 180*16, 180*16)
+            painter.drawLine(center.x(), center.y()+int(5*self.scale), center.x(), center.y()+int(7*self.scale))
+            painter.drawLine(center.x()-int(3*self.scale), center.y()+int(7*self.scale), center.x()+int(3*self.scale), center.y()+int(7*self.scale))
 
 
 class ASRModeWindow(QWidget):
@@ -114,22 +134,18 @@ class ASRModeWindow(QWidget):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
-        # Main Layout with margins for shadow
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(25, 25, 25, 25)
         self.main_layout.setSpacing(0)
 
-        # Container - the visible rounded rectangle
         self.container = QFrame()
         self.container.setObjectName("asr_container")
         
-        # Container layout - horizontal with text and buttons, vertically centered
         self.container_layout = QHBoxLayout(self.container)
-        self.container_layout.setContentsMargins(15, 0, 10, 0)  # No vertical padding
-        self.container_layout.setSpacing(8)
-        self.container_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)  # Vertically center all items
+        self.container_layout.setContentsMargins(15, 0, 5, 0) 
+        self.container_layout.setSpacing(0)
+        self.container_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         
-        # Shadow
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(20)
         shadow.setXOffset(0)
@@ -142,36 +158,39 @@ class ASRModeWindow(QWidget):
         from model_config import get_model_config
         self.m_cfg = get_model_config()
         
-        # Display label
-        self.display = QLabel(self.m_cfg.get_prompt("idle_zh"))
-        self.display.setWordWrap(True)
-        self.display.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        # Display - using ScaledTextEdit for coordinate tracking
+        self.display = ScaledTextEdit(self, self.m_cfg.get_prompt("idle_zh"), "white", hide_cursor=True)
+        self.display.setReadOnly(True)
+        self.display.viewport().setCursor(Qt.CursorShape.ArrowCursor)
         self.display.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
         # Waveform
         self.waveform = VoiceWaveform(self)
         self.waveform.setVisible(False)
         
-        # Buttons
-        self.clear_btn = ASRIconButton(self, "clear")
+        # Clear button - parented to container for absolute positioning
+        self.clear_btn = ClearButton(self.container)
         self.clear_btn.clicked.connect(self.clear_input)
-        self.clear_btn.setVisible(False)
         
         self.voice_btn = ASRIconButton(self, "mic")
         self.voice_btn.pressed.connect(self.requestRecordStart.emit)
         self.voice_btn.released.connect(self.requestRecordStop.emit)
         
+        # Slot machine label for initial animation - 默认使用灰色
+        self.slot_label = SlotMachineLabel(self, self.m_cfg.get_prompt("idle_zh"), "rgba(255,255,255,0.5)")
+        self.slot_label.set_character_set("zh")
+        self.slot_label.setVisible(False)
+        self.slot_label.animationFinished.connect(self._on_animation_finished)
+        
         # Add to layout
         self.container_layout.addWidget(self.display, 1)
+        self.container_layout.addWidget(self.slot_label, 1)
         self.container_layout.addWidget(self.waveform, 1)
-        self.container_layout.addWidget(self.clear_btn)
         self.container_layout.addWidget(self.voice_btn)
 
-        # 核心：安装事件过滤器，让点击容器也能拖动窗口
         self.container.installEventFilter(self)
         self.display.installEventFilter(self)
 
-        # State
         self.theme_mode = "Dark"
         self.window_scale = 1.0
         self.font_size_factor = 1.0
@@ -179,7 +198,6 @@ class ASRModeWindow(QWidget):
         self._placeholder_color = "rgba(255,255,255,0.5)"
         self._text_color = "white"
         
-        # Animation for smooth height changes
         self.height_anim = QPropertyAnimation(self, b"minimumHeight")
         self.height_anim.setDuration(200)
         self.height_anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
@@ -191,7 +209,6 @@ class ASRModeWindow(QWidget):
         self._dragging = False
         self._drag_pos = None
 
-        # Auto-clear timer (5 seconds)
         self.auto_clear_timer = QTimer(self)
         self.auto_clear_timer.setSingleShot(True)
         self.auto_clear_timer.setInterval(5000)
@@ -211,19 +228,20 @@ class ASRModeWindow(QWidget):
             self._text_color = "white"
             self._placeholder_color = "rgba(255,255,255,0.5)"
         
+        r = int(12 * self.window_scale)
         self.container.setStyleSheet(f"""
             QFrame#asr_container {{
                 background-color: {bg};
-                border-radius: 12px;
+                border-radius: {r}px;
                 border: none;
             }}
         """)
         
         btn_bg = QColor(0,0,0,40) if theme=="Light" else QColor(255,255,255,25)
         btn_icon = QColor(100,100,100) if theme=="Light" else QColor(200,200,200)
-        self.clear_btn.bg_color = btn_bg
-        self.clear_btn.icon_color = btn_icon
-        self.clear_btn.update()
+        
+        self.clear_btn.update_style(theme)
+        
         self.voice_btn.bg_color = btn_bg
         self.voice_btn.icon_color = btn_icon
         self.voice_btn.update()
@@ -235,11 +253,13 @@ class ASRModeWindow(QWidget):
     def apply_scaling(self, scale, font_factor):
         self.window_scale = scale
         self.font_size_factor = font_factor
-        # removed overriding current_font_name logic
+        self.voice_btn.apply_scale(scale)
+        self.clear_btn.apply_scale(scale)
+        self.slot_label.apply_scale(scale, font_factor=font_factor)
         self._update_display_style()
         self._update_size()
+        self.apply_theme(self.theme_mode) # Update border radius
 
-    # Compatibility methods
     def change_theme(self, theme): self.apply_theme(theme)
     def set_font_name(self, name): 
         self.current_font_name = name
@@ -250,21 +270,18 @@ class ASRModeWindow(QWidget):
     def _update_display_style(self):
         family = FontManager.get_correct_family(self.current_font_name)
         font_size = int(14 * self.font_size_factor)
-        
-        current_text = self.display.text()
+        current_text = self.display.toPlainText()
         loading_msgs = [self.m_cfg.get_prompt("loading"), self.m_cfg.get_prompt("init")]
         placeholders = [self.m_cfg.get_prompt("idle_zh"), self.m_cfg.get_prompt("listening")] + loading_msgs
         is_placeholder = current_text in placeholders or current_text == ""
         color = self._placeholder_color if is_placeholder else self._text_color
         
-        self.display.setStyleSheet(f"""
-            QLabel {{
-                color: {color}; 
-                background: transparent; 
-                font-size: {font_size}px; 
-                font-family: '{family}';
-            }}
-        """)
+        self.display.set_text_color(color)
+        self.display.apply_scale(self.window_scale, family, self.font_size_factor)
+        
+        # 老虎机强制使用占位符颜色
+        self.slot_label.set_text_color(self._placeholder_color)
+        self.slot_label.apply_scale(self.window_scale, family, self.font_size_factor)
 
     def _needs_expansion(self, text):
         loading_msgs = [self.m_cfg.get_prompt("loading"), self.m_cfg.get_prompt("init")]
@@ -272,32 +289,27 @@ class ASRModeWindow(QWidget):
             return False
         font = self.display.font()
         fm = QFontMetrics(font)
-        available_width = int(300 * self.window_scale) - 100
+        available_width = int(300 * self.window_scale) - int(50 * self.window_scale) # Adjusted for padding and mic button
         text_width = fm.horizontalAdvance(text)
         return text_width > available_width or "\n" in text
 
     def _update_size(self):
         s = self.window_scale
-        # 固定宽度，不再随内容抖动
         fixed_w = int(320 * s)
-        self.setFixedWidth(fixed_w + 50)
-        
-        self.base_height = int(48 * s)
+        self.setFixedWidth(fixed_w + int(50 * s))
+        self.base_height = int(52 * s)
         self.expanded_height = int(100 * s)
-        
-        text = self.display.text()
+        text = self.display.toPlainText()
         needs_expand = self._needs_expansion(text)
         
         if needs_expand != self.is_expanded:
             self.is_expanded = needs_expand
             target_container_h = self.expanded_height if needs_expand else self.base_height
             target_window_h = target_container_h + 50
-            
             self.height_anim.stop()
             self.height_anim.setStartValue(self.height())
             self.height_anim.setEndValue(target_window_h)
             self.height_anim.start()
-            
             self.container.setMinimumHeight(target_container_h)
             self.container.setMaximumHeight(target_container_h)
         else:
@@ -309,28 +321,64 @@ class ASRModeWindow(QWidget):
             self.container.setMaximumHeight(target_container_h)
 
     def update_segment(self, text):
-        self.display.setText(text)
+        # 如果正在进行动画，且现在有真正文本输入，强制停止动画
+        if self.slot_label.isVisible():
+            self.slot_label.setVisible(False)
+            self.display.setVisible(True)
+            
+        self.display.setPlainText(text)
         self._update_display_style()
         is_real_text = text not in [self.m_cfg.get_prompt("idle_zh"), self.m_cfg.get_prompt("listening"), ""]
         self.clear_btn.setVisible(is_real_text)
         self._update_size()
+        self._update_clear_btn_pos()
         
         if is_real_text:
             self.auto_clear_timer.start()
         else:
             self.auto_clear_timer.stop()
 
+    def _update_clear_btn_pos(self):
+        """Position X button immediately after text end"""
+        if not self.display.toPlainText() or not self.clear_btn.isVisible():
+            return
+            
+        cursor = self.display.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        rect = self.display.cursorRect(cursor)
+        
+        viewport_pos = self.display.viewport().mapTo(self.container, rect.topRight())
+        
+        s = self.window_scale
+        x = viewport_pos.x() + int(10 * s)
+        y = viewport_pos.y() + (rect.height() - self.clear_btn.height()) // 2
+        
+        # Guard against mic button
+        max_x = self.container.width() - int(60 * s)
+        if x > max_x: x = max_x
+            
+        self.clear_btn.move(x, y)
+        self.clear_btn.raise_()
+
     def update_status(self, status):
-        current = self.display.text()
+        current = self.display.toPlainText()
         if status == "idle" or "加载完成" in status or "就绪" in status:
-            if self.m_cfg.is_placeholder_text(current):
+            if self.slot_label.isVisible():
+                # 加载完毕，开始逐字归位
+                self.slot_label.settle_one_by_one(start_delay=300)
+            elif self.m_cfg.is_placeholder_text(current):
                 self.update_segment(self.m_cfg.get_prompt("idle_zh"))
-        elif "加载" in status or status == "loading":
-            self.display.setText(self.m_cfg.get_prompt("loading"))
+        elif "加载" in status or status == "loading" or status == "asr_loading":
+            # 开启老虎机动画
+            self.display.setVisible(False)
+            self.slot_label.setVisible(True)
+            self.slot_label.start_animation()
             self._update_display_style()
-        elif status == "asr_loading":
-            self.display.setText(self.m_cfg.get_prompt("init"))
-            self._update_display_style()
+            
+            # 关键修复：如果引擎其实已经加载好了（比如从其他模式切回来），
+            # 就播个 1.0 秒的动画效果然后自动开始归位，避免无限滚动。
+            if ASRManager().worker.engine.is_loaded:
+                QTimer.singleShot(1000, self.slot_label.settle_one_by_one)
 
     def clear_input(self):
         self.update_segment(self.m_cfg.get_prompt("idle_zh"))
@@ -342,22 +390,16 @@ class ASRModeWindow(QWidget):
         self.voice_btn.set_recording(is_recording)
         self.waveform.setVisible(is_recording)
         self.display.setVisible(not is_recording)
-        
-        current = self.display.text()
+        current = self.display.toPlainText()
         if is_recording:
             self.auto_clear_timer.stop()
-            # 立即重置显示内容，防止看到上一句的历史记录
             self.update_segment(self.m_cfg.get_prompt("listening"))
         else:
-            if current == self.m_cfg.get_prompt("listening"):
-                # 说话结束但结果未出时，保持空白
-                self.update_segment("")
-            elif current not in [self.m_cfg.get_prompt("idle_zh"), ""]:
-                self.auto_clear_timer.start()
+            if current == self.m_cfg.get_prompt("listening"): self.update_segment("")
+            elif current not in [self.m_cfg.get_prompt("idle_zh"), ""]: self.auto_clear_timer.start()
 
     def update_audio_level(self, level):
-        if self.waveform.isVisible():
-            self.waveform.set_level(level)
+        if self.waveform.isVisible(): self.waveform.set_level(level)
 
     def _start_drag(self, global_pos):
         self._dragging = True
@@ -369,45 +411,58 @@ class ASRModeWindow(QWidget):
     def mouseMoveEvent(self, e):
         if self._dragging and self._drag_pos: 
             self.move(e.globalPosition().toPoint() - self._drag_pos)
-    def mouseReleaseEvent(self, e): self._dragging = False
+    def mouseReleaseEvent(self, e): 
+        if self._dragging:
+            self._dragging = False
+            self.m_cfg.set_window_pos(self.x(), self.y())
 
     def eventFilter(self, obj, event):
         from PyQt6.QtCore import QEvent
         if event.type() == QEvent.Type.MouseButtonPress:
             if event.button() == Qt.MouseButton.LeftButton:
-                # 排除按钮，防止误拦截
                 if obj not in [self.clear_btn, self.voice_btn]:
                     self._start_drag(event.globalPosition().toPoint())
-                    # 如果是显示区域，吞掉事件防止其内部处理（对于 Label 无所谓，对于 TextEdit 很重要）
                     if obj == self.display: return True
-        
         elif event.type() == QEvent.Type.MouseMove:
             if self._dragging:
                 self.move(event.globalPosition().toPoint() - self._drag_pos)
                 return True
-                
         elif event.type() == QEvent.Type.MouseButtonRelease:
-            if event.button() == Qt.MouseButton.LeftButton:
-                self._dragging = False
-                
+            if event.button() == Qt.MouseButton.LeftButton: 
+                if self._dragging:
+                    self._dragging = False
+                    self.m_cfg.set_window_pos(self.x(), self.y())
         return super().eventFilter(obj, event)
 
     def showEvent(self, event):
         super().showEvent(event)
-        self._dragging = False # 重置状态，防止隐藏时未释放导致的粘滞
+        self._dragging = False 
+        
+        # 处理窗口定位
+        wx, wy = self.m_cfg.window_pos
+        if wx == -1 or wy == -1:
+            screen = QApplication.primaryScreen().geometry()
+            size = self.frameGeometry().size()
+            x = (screen.width() - size.width()) // 2
+            y = (screen.height() - size.height()) // 2
+            self.move(x, y)
+        else:
+            self.move(wx, wy)
+
         self.activateWindow()
         self.raise_()
+        
+        # 只要是占位符就执行动画
+        if self.m_cfg.is_placeholder_text(self.display.toPlainText()):
+            self.update_status("asr_loading")
 
     def contextMenuEvent(self, event):
         self.show_context_menu(event.globalPos())
 
     def show_context_menu(self, global_pos):
-        # 强制激活窗口，确保点击菜单外能正常消失
         self.activateWindow()
         self.raise_()
-        
         menu = QMenu() 
-        # ... 内容保持不变 ...
         mode_menu = menu.addMenu("应用模式")
         modes = [("asr", "中文直出模式"), ("asr_jp", "日文直出模式"), ("translation", "中日双显模式")]
         current_mode = self.m_cfg.app_mode
@@ -415,21 +470,21 @@ class ASRModeWindow(QWidget):
             display_name = f"{m_name}{'        ✔' if m_id == current_mode else ''}"
             action = mode_menu.addAction(display_name)
             action.triggered.connect(lambda checked, mid=m_id: self.requestAppModeChange.emit(mid))
-        
         menu.addSeparator()
         menu.addAction("详细设置").triggered.connect(self.requestOpenSettings.emit)
-        
         is_on = StartupManager.is_enabled()
-        # 统一使用右侧文本标记勾选
         autostart_text = f"开机自启{'        ✔' if is_on else ''}"
         menu.addAction(autostart_text).triggered.connect(lambda: StartupManager.set_enabled(not is_on))
-        
         menu.addSeparator()
         menu.addAction("重启应用").triggered.connect(self.requestRestart.emit)
         menu.addAction("退出程序").triggered.connect(self.requestQuit.emit)
-        
-        self.activateWindow() # 确保窗口激活，解决点击外部不消失的问题
+        self.activateWindow() 
         menu.exec(global_pos)
+
+    def _on_animation_finished(self):
+        self.slot_label.setVisible(False)
+        self.display.setVisible(True)
+        self.update_segment(self.m_cfg.get_prompt("idle_zh"))
 
     def _show_hotkey_dialog(self):
         asr = self.m_cfg.hotkey_asr

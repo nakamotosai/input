@@ -12,6 +12,37 @@ import asyncio
 import io
 import threading
 import logging
+import traceback
+import os
+
+# 配置日志输出到文件
+def _setup_logging():
+    from model_config import get_model_config
+    cfg = get_model_config()
+    log_file = os.path.join(cfg.DATA_DIR, "tts_worker.log")
+    try:
+        logging.basicConfig(
+            filename=log_file,
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            encoding='utf-8',
+            force=True
+        )
+        logging.info("TTS Worker logging started.")
+        
+        # 检查 ffmpeg
+        import subprocess
+        try:
+            res = subprocess.run(['ffmpeg', '-version'], creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True)
+            logging.info(f"ffmpeg 探测成功")
+        except:
+            logging.error("ffmpeg 未找到，pydub 将无法处理 MP3。")
+        
+        print(f"[TTS] 日志已启用: {log_file}")
+    except Exception as e:
+        print(f"[TTS] 日志初始化失败: {e}")
+
+_setup_logging()
 
 # 语音选择 (ja-JP-NanamiNeural 是目前音质最好的日语女声之一)
 VOICE = "ja-JP-NanamiNeural"
@@ -76,6 +107,7 @@ def _decode_mp3_to_pcm(mp3_data):
         return None, None
     except Exception as e:
         logging.error(f"[TTS] MP3 解码错误: {e}")
+        logging.error(traceback.format_exc())
         return None, None
 
 
@@ -92,12 +124,18 @@ class TTSWorker:
 
     async def _get_audio_data(self, text):
         """调用 Edge-TTS 获取音频二进制数据"""
-        communicate = edge_tts.Communicate(text, VOICE)
-        audio_stream = io.BytesIO()
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                audio_stream.write(chunk["data"])
-        return audio_stream.getvalue()
+        try:
+            # 增加任务超时保护
+            communicate = edge_tts.Communicate(text, VOICE)
+            audio_stream = io.BytesIO()
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    audio_stream.write(chunk["data"])
+            data = audio_stream.getvalue()
+            return data
+        except Exception as e:
+            logging.error(f"[TTS] Edge-TTS 异常: {e}")
+            return None
 
     def stop(self):
         """中断当前播放"""
@@ -162,23 +200,29 @@ class TTSWorker:
                 self._refresh_device()
 
                 # 4. 播放
-                print(f"[TTS] 开始播放...")
+                logging.info(f"[TTS] 开始播放音频流... 长度: {len(samples)}")
                 sd.play(samples, samplerate=sample_rate, device=self._output_device)
                 
-                # 使用轮询方式等待播放完成，以便可以被中断
+                # 等待播放完成或被中断
                 while sd.get_stream().active:
                     if self._stop_event.is_set():
                         sd.stop()
-                        print("[TTS] 播放被新请求中断")
+                        logging.info("[TTS] 播放被主动中断")
                         break
-                    sd.sleep(100)  # 每 100ms 检查一次
+                    sd.sleep(50)
                 else:
-                    print("[TTS] 播放完成")
+                    logging.info("[TTS] 播放自然结束")
                     
             except Exception as e:
-                logging.error(f"[TTS] 播放错误: {e}")
+                logging.error(f"[TTS] 关键执行错误: {e}")
+                logging.error(traceback.format_exc())
             finally:
                 self._current_text = None
+                # 显式清除以便下次进来
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                # 不做任何事，主要是为了重置事件循环状态
+                loop.close()
 
 
 _instance = TTSWorker()

@@ -1,6 +1,8 @@
 """
 ASR管理模块 - 专注于 Sherpa-ONNX 引擎的极简驱动
 不再包含冗余的标点模型逻辑和复杂的正则启发式算法
+
+修复：在主进程中解析模型路径后传递给子进程，避免子进程路径解析问题
 """
 
 import os
@@ -35,7 +37,7 @@ def clean_asr_output(text: str, mode: str = "raw") -> str:
     text = re.sub(r'<\|.*?\|>', '', text)
     text = re.sub(r'\[.*?\]', '', text)
     
-    # 2. 如果是“正则表达 (Cleaned)”模式，执行额外的净化逻辑
+    # 2. 如果是"正则表达 (Cleaned)"模式，执行额外的净化逻辑
     if mode == ASROutputMode.CLEANED.value:
         # A. 移除常见的口癖/无意义填充词 (可选，根据用户反馈调整)
         # fillers = r'(呃|啊|吧|呢|那个|然后)'
@@ -58,7 +60,11 @@ def clean_asr_output(text: str, mode: str = "raw") -> str:
 
 # ===== ONNX 推理独立进程核心函数 =====
 def onnx_inference_worker(model_path, input_queue, output_queue, log_file=None):
-    """独立的 ONNX 推理进程，由于已内置模型，不再检查下载状态"""
+    """
+    独立的 ONNX 推理进程
+    
+    重要：model_path 必须是在主进程中已解析好的绝对路径
+    """
     try:
         import sys
         if log_file:
@@ -69,7 +75,8 @@ def onnx_inference_worker(model_path, input_queue, output_queue, log_file=None):
             except: pass
 
         import sherpa_onnx
-        print(f"[ASR-Proc] 正在加载内置 Sherpa-ONNX 模型: {model_path}")
+        print(f"[ASR-Proc] 正在加载 Sherpa-ONNX 模型: {model_path}")
+        print(f"[ASR-Proc] 模型路径存在: {os.path.exists(model_path)}")
         
         # 定义核心文件
         model_file = os.path.join(model_path, "model.int8.onnx")
@@ -77,6 +84,9 @@ def onnx_inference_worker(model_path, input_queue, output_queue, log_file=None):
             model_file = os.path.join(model_path, "model.onnx")
             
         tokens_file = os.path.join(model_path, "tokens.txt")
+        
+        print(f"[ASR-Proc] 模型文件: {model_file}, 存在: {os.path.exists(model_file)}")
+        print(f"[ASR-Proc] Tokens文件: {tokens_file}, 存在: {os.path.exists(tokens_file)}")
         
         if not os.path.exists(model_file) or not os.path.exists(tokens_file):
             raise FileNotFoundError(f"核心模型文件缺失，请检查 {model_path} 目录")
@@ -89,7 +99,7 @@ def onnx_inference_worker(model_path, input_queue, output_queue, log_file=None):
             num_threads=4
         )
             
-        print(f"[ASR-Proc] 内置模型加载成功")
+        print(f"[ASR-Proc] 模型加载成功")
         sys.stdout.flush()
         
         # 通知主进程已就绪
@@ -122,7 +132,9 @@ def onnx_inference_worker(model_path, input_queue, output_queue, log_file=None):
             
     except Exception as e:
         err = f"ASR进程崩溃: {str(e)}"
-        try: print(err)
+        try: 
+            print(err)
+            traceback.print_exc()
         except: pass
         output_queue.put(("fatal", err))
     finally:
@@ -139,14 +151,26 @@ class OnnxASREngine:
         self.process = None
     
     def load(self, model_path: str) -> bool:
+        """
+        加载 ASR 模型
+        
+        重要：model_path 必须是已解析好的绝对路径
+        """
         try:
             if self.process and self.process.is_alive():
                 self.unload()
             
+            # 验证模型路径
+            if not model_path or not os.path.exists(model_path):
+                print(f"[ASR-Engine] 模型路径无效: {model_path}")
+                return False
+            
+            # 获取日志目录
             from model_config import get_model_config
             cfg = get_model_config()
-            log_dir = os.path.dirname(cfg.CONFIG_PATH)
-            log_file = os.path.join(log_dir, "asr_process.log")
+            log_file = os.path.join(cfg.DATA_DIR, "asr_process.log")
+
+            print(f"[ASR-Engine] 启动 ASR 进程，模型路径: {model_path}")
 
             self.process = multiprocessing.Process(
                 target=onnx_inference_worker,
@@ -157,14 +181,18 @@ class OnnxASREngine:
             
             # 等待确认信号
             try:
-                msg_type, val = self.output_queue.get(timeout=20)
+                msg_type, val = self.output_queue.get(timeout=30)
                 if msg_type == "ready":
                     self.is_loaded = True
+                    print(f"[ASR-Engine] ASR 进程就绪")
                     return True
-            except:
-                pass
+                elif msg_type == "fatal":
+                    print(f"[ASR-Engine] ASR 进程启动失败: {val}")
+            except Exception as e:
+                print(f"[ASR-Engine] 等待 ASR 进程超时: {e}")
             return False
-        except:
+        except Exception as e:
+            print(f"[ASR-Engine] 启动异常: {e}")
             return False
     
     def transcribe(self, audio_data) -> str:
@@ -182,20 +210,18 @@ class OnnxASREngine:
         if self.process and self.process.is_alive():
             try:
                 self.input_queue.put(None)
-                self.process.join(timeout=3)  # 增加等待时间
+                self.process.join(timeout=3)
                 if self.process.is_alive(): 
                     self.process.terminate()
-                    self.process.join(timeout=1)  # 等待终止完成
+                    self.process.join(timeout=1)
             except: pass
             finally:
-                # 清理队列资源
                 try:
                     self.input_queue.close()
                     self.output_queue.close()
                 except: pass
         self.process = None
         self.is_loaded = False
-        # 重新创建干净的队列用于下次
         self.input_queue = multiprocessing.Queue()
         self.output_queue = multiprocessing.Queue()
 
@@ -213,8 +239,20 @@ class ASRWorker(QObject):
     
     @pyqtSlot()
     def load_model(self):
+        # 在主进程中解析模型路径
         model_path = self.config.get_asr_model_path()
+        
+        if not model_path:
+            self.error_occurred.emit("未找到语音识别模型")
+            return
+            
+        if not os.path.exists(model_path):
+            self.error_occurred.emit(f"模型路径不存在: {model_path}")
+            return
+        
         self.status_changed.emit(f"正在启动语音引擎...")
+        print(f"[ASRWorker] 解析的模型路径: {model_path}")
+        
         if self.engine.load(model_path):
             self.status_changed.emit("语音引擎已就绪")
             self.model_ready.emit()
@@ -227,7 +265,6 @@ class ASRWorker(QObject):
         try:
             raw_text = self.engine.transcribe(audio_data)
             if raw_text:
-                # 在此根据当前配置的输出模式进行清理
                 mode = self.config.asr_output_mode
                 cleaned_text = clean_asr_output(raw_text, mode=mode)
                 self.result_ready.emit(cleaned_text)
