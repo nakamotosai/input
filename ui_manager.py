@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QGraphicsDropShadowEffect, 
     QApplication, QLabel, QPushButton, QSlider, QFrame, QGridLayout, QMenu, QDialog, QLineEdit, QWidgetAction, QSystemTrayIcon, QSizePolicy
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QEvent, QPoint, QTimer, QRect, QPropertyAnimation, QEasingCurve, pyqtProperty
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QEvent, QPoint, QTimer, QRect, QRectF, QPropertyAnimation, QEasingCurve, pyqtProperty
 from PyQt6.QtGui import QColor, QFont, QPainter, QLinearGradient, QBrush, QFontDatabase, QFontMetrics, QPalette, QPainterPath, QIcon, QKeyEvent, QKeySequence, QScreen, QPen, QTextCursor, QAction
 import os, json, sys, time, random
 
@@ -722,50 +722,36 @@ class CopyBubble(QLabel):
         self.fade_anim.start()
 
 class FloatingVoiceIndicator(QWidget):
-    """悬浮录音指示器，在 ASR 模式隐藏界面录音时显示"""
+    """悬浮录音指示器 (Rainbow Spectral Bar)"""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(120, 120) 
+        self.setFixedSize(300, 40) # 足够容纳最大伸展
         
-        self.level = 0.1
-        self.smooth_level = 0.1
-        self.pulse_radius = 0
+        self.level = 0.0
+        self.smooth_level = 0.0
+        self.offset = 0.0
         
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._animate)
-        self.timer.start(8)
+        self.timer.start(20) # 50fps for smooth motion
         
-        self.pulse_anim = QPropertyAnimation(self, b"pulse_radius")
-        self.pulse_anim.setDuration(1000)
-        self.pulse_anim.setLoopCount(-1)
-        self.pulse_anim.setStartValue(0)
-        self.pulse_anim.setEndValue(35) 
-        self.pulse_anim.setEasingCurve(QEasingCurve.Type.OutQuad)
-
     def set_level(self, rms):
-        target = max(0.1, min(1.0, rms / 800.0))
+        # Normalize RMS to 0.0 - 1.0
+        target = max(0.0, min(1.0, rms / 800.0))
         self.level = target
 
-    def get_pulse_radius(self): return self._pulse_radius
-    def set_pulse_radius(self, r): 
-        self._pulse_radius = r
-        self.update()
-    pulse_radius = pyqtProperty(float, fget=get_pulse_radius, fset=set_pulse_radius)
-
     def _animate(self):
+        # 平滑过渡音量
         self.smooth_level += (self.level - self.smooth_level) * 0.2
+        # 滚动彩虹颜色
+        self.offset = (self.offset + 0.01) % 1.0
         self.update()
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.pulse_anim.start()
         self._reposition()
-
-    def hideEvent(self, event):
-        super().hideEvent(event)
-        self.pulse_anim.stop()
 
     def _reposition(self):
         screen = QApplication.primaryScreen().geometry()
@@ -776,32 +762,44 @@ class FloatingVoiceIndicator(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # 动态计算尺寸
+        # 静默: 60px * 2px
+        # 峰值: 200px * 8px
+        base_w = 60
+        max_expansion = 140
+        w = base_w + (self.smooth_level * max_expansion)
+        
+        # [Task] Height should be strictly unchanged
+        h = 4
+        
+        # 居中矩形
+        
+        # 居中矩形
         center = self.rect().center()
+        rect = QRectF(center.x() - w/2, center.y() - h/2, w, h)
         
-        if self.smooth_level > 0.12:
-            alpha = int(180 * (1.0 - self.pulse_radius / 35.0) * self.smooth_level)
-            painter.setPen(Qt.PenStyle.NoPen)
-            pulse_color = QColor(255, 60, 60, alpha)
-            painter.setBrush(QBrush(pulse_color))
-            r_pulse = int(22 + self.pulse_radius * self.smooth_level)
-            painter.drawEllipse(center, r_pulse, r_pulse)
+        # 创建彩虹渐变
+        gradient = QLinearGradient(rect.left(), 0, rect.right(), 0)
+        gradient.setSpread(QLinearGradient.Spread.RepeatSpread)
         
-        bg_radius = 22
-        painter.setBrush(QBrush(QColor(20, 20, 20, 230)))
+        # 颜色定义 (与 RainbowDivider 一致)
+        # Shift stops by self.offset to create rolling effect
+        colors = [
+            (0.0, QColor(255,0,0)), (0.14, QColor(255,127,0)), 
+            (0.28, QColor(255,255,0)), (0.42, QColor(0,255,0)), 
+            (0.56, QColor(0,0,255)), (0.70, QColor(75,0,130)), 
+            (0.84, QColor(148,0,211)), (1.0, QColor(255,0,0))
+        ]
+        
+        for pos, color in colors:
+            # Shift position
+            shifted_pos = (pos - self.offset) % 1.0
+            gradient.setColorAt(shifted_pos, color)
+            
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(center, bg_radius, bg_radius)
-        
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(QColor("white")))
-        painter.drawRoundedRect(center.x()-4, center.y()-8, 8, 13, 4, 4)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        p = painter.pen()
-        p.setColor(QColor(255, 255, 255, 200))
-        p.setWidth(2)
-        painter.setPen(p)
-        painter.drawArc(center.x()-8, center.y()-3, 16, 12, 180*16, 180*16)
-        painter.drawLine(center.x(), center.y()+9, center.x(), center.y()+12)
-        painter.drawLine(center.x()-4, center.y()+12, center.x()+4, center.y()+12)
+        painter.setBrush(QBrush(gradient))
+        painter.drawRoundedRect(rect, h/2, h/2)
 
 class TranslatorWindow(QWidget):
     requestTranslation = pyqtSignal(str)

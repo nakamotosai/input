@@ -32,9 +32,20 @@ def clean_asr_output(text: str, mode: str = "raw", is_insertion: bool = False) -
     is_insertion: 如果为 True，则剥离末尾句号；如果为 False，则保留。
     """
     if not text:
-        return text
+        return ""
         
-    # 1. 基础清理：移除所有模型内置标签 <|xxx|> 和 [xxx]
+    # [Fix] 1. 预处理：去除首尾空白
+    text = text.strip()
+    if not text:
+        return ""
+        
+    # [Fix] 2. 内容效验：必须包含至少一个有效字符 (中文、日文、韩文、字母、数字)
+    # 防止 Sherpa-ONNX 幻觉输出纯标点 (如 "。" 或 "..." 或 "?")
+    has_content = re.search(r'[\u4e00-\u9fa5\u3040-\u30ff\u31f0-\u31ff\uac00-\ud7af\w]', text)
+    if not has_content:
+        return ""
+        
+    # 3. 基础清理：移除所有模型内置标签 <|xxx|> 和 [xxx]
     text = re.sub(r'<\|.*?\|>', '', text)
     text = re.sub(r'\[.*?\]', '', text)
     
