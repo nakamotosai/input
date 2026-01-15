@@ -145,6 +145,36 @@ class AppController(QObject):
         
         self.on_worker_status_changed("asr_loading")
         self.handle_mode_change(self.app_mode) # Refresh state
+        
+        # [Task] 初始化托盘菜单
+        self._update_tray_menu()
+
+    def _update_tray_menu(self):
+        """Update the tray context menu using shared logic"""
+        from ui_manager import create_context_menu
+        from PyQt6.QtCore import pyqtSignal, QObject
+        
+        # Create a proxy object to map menu signals to Main methods
+        class TrayProxy(QObject):
+            requestAppModeChange = pyqtSignal(str) # [Fix] Added mode change signal
+            requestScaleChange = pyqtSignal(float)
+            requestThemeChange = pyqtSignal(str)
+            requestFontChange = pyqtSignal(str)
+            requestOpenSettings = pyqtSignal()
+            requestRestart = pyqtSignal()
+            requestQuit = pyqtSignal()
+            
+        self.tray_proxy = TrayProxy()
+        self.tray_proxy.requestAppModeChange.connect(self.handle_mode_change) # [Fix] Connect mode change
+        self.tray_proxy.requestScaleChange.connect(self.handle_scale_change)
+        self.tray_proxy.requestThemeChange.connect(self.handle_theme_change)
+        self.tray_proxy.requestFontChange.connect(self.handle_font_change)
+        self.tray_proxy.requestOpenSettings.connect(self.open_settings)
+        self.tray_proxy.requestRestart.connect(self.restart_app)
+        self.tray_proxy.requestQuit.connect(self.app.quit)
+        
+        self.tray_menu = create_context_menu(None, self.m_cfg, self.tray_proxy)
+        self.tray.setContextMenu(self.tray_menu)
 
     def _connect_win_signals(self, win):
         win.requestSend.connect(self.handle_send_request)
@@ -194,6 +224,9 @@ class AppController(QObject):
         self.m_cfg.app_mode = mode_id # 这会自动触发 save_config
 
     def on_asr_down(self):
+        # [Async] 按下瞬间立即触发光标探测
+        self.sys_handler.trigger_insertion_check()
+        
         self.window.update_recording_status(True)
         self.audio_recorder.start_recording()
         
@@ -240,8 +273,9 @@ class AppController(QObject):
                 self.window.focus_input()
 
     def _handle_audio_ready(self, audio_data):
-        # 检查是否最近发生过点击或光标移动（插入行为）
-        is_ins = self.sys_handler.is_likely_insertion(threshold=5.0)
+        # [Async] 使用按下时已经开启探测并缓存的结果
+        # 此时探测线程应该早已完成
+        is_ins = self.sys_handler.get_cached_insertion()
         self.asr_manager.transcribe_async(audio_data, is_insertion=is_ins)
 
     def handle_asr_result(self, result):
@@ -470,11 +504,13 @@ class AppController(QObject):
         self.save_config()
 
     def handle_scale_change(self, scale):
+        self.m_cfg.window_scale = scale # [Fix] Update config
         for win in self.all_windows:
             if hasattr(win, 'apply_scaling'): win.apply_scaling(scale, win.font_size_factor, win.current_font_name == "思源宋体")
         self.save_config()
 
     def handle_font_change(self, font_name):
+        self.m_cfg.font_name = font_name # [Fix] Update config
         for win in self.all_windows:
             if hasattr(win, 'current_font_name'):
                 win.current_font_name = font_name

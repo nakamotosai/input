@@ -14,6 +14,27 @@ class SystemHandler:
         self._tracking_started = False
         self._pending_paste_text = None  # 等待粘贴的文本
         self._pending_paste_callback = None  # 粘贴完成后的回调
+        self._cached_insertion_state = False # 缓存的探测结果 (默认 False = Append Mode)
+
+    def trigger_insertion_check(self):
+        """
+        [Async] 触发一次光标位置探测，并将结果缓存。
+        设计用于在用户按下 ASR 快捷键的瞬间调用，消除识别时的探测延迟。
+        """
+        def _worker():
+            # 这里调用同步的探测逻辑
+            res = self.is_likely_insertion()
+            self._cached_insertion_state = res
+            # try:
+            #     with open("uia_debug.log", "a", encoding="utf-8") as f:
+            #         f.write(f"[AsyncCheck] Result Cached: {res}\n")
+            # except: pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def get_cached_insertion(self) -> bool:
+        """获取最近一次异步探测的结果"""
+        return self._cached_insertion_state
 
     def is_likely_insertion(self, threshold=5.0) -> bool:
         """
@@ -44,7 +65,7 @@ class SystemHandler:
         """检查当前焦点是否是文本输入控件"""
         try:
             import uiautomation as auto
-            auto.SetGlobalSearchTimeout(0.2)
+            auto.SetGlobalSearchTimeout(0.05)
             focused = auto.GetFocusedControl()
             if not focused: return False
             
@@ -71,7 +92,7 @@ class SystemHandler:
         try:
             # 动态导入防止启动过慢
             import uiautomation as auto
-            auto.SetGlobalSearchTimeout(0.2) # 快速超时，避免卡顿
+            auto.SetGlobalSearchTimeout(0.05) # 快速超时，避免卡顿
             
             focused = auto.GetFocusedControl()
             if not focused: return None
@@ -246,7 +267,7 @@ class SystemHandler:
             import pyperclip
             from pynput.keyboard import Controller, Key
             pyperclip.copy(text)
-            time.sleep(0.05)
+            time.sleep(0.02)
             keyboard = Controller()
             with keyboard.pressed(Key.ctrl):
                 keyboard.press('v')
@@ -291,6 +312,5 @@ class SystemHandler:
             return
 
         # 4. 如果成功恢复焦点且是有效的输入框，立即执行粘贴
-        time.sleep(0.1) 
-        self._do_paste(text, should_send) 
-
+        time.sleep(0.05) 
+        self._do_paste(text, should_send)

@@ -1,9 +1,9 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QGraphicsDropShadowEffect, 
-    QApplication, QLabel, QPushButton, QSlider, QFrame, QGridLayout, QMenu, QDialog, QLineEdit
+    QApplication, QLabel, QPushButton, QSlider, QFrame, QGridLayout, QMenu, QDialog, QLineEdit, QWidgetAction, QSystemTrayIcon, QSizePolicy
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QEvent, QPoint, QTimer, QRect, QPropertyAnimation, QEasingCurve, pyqtProperty
-from PyQt6.QtGui import QColor, QFont, QPainter, QLinearGradient, QBrush, QFontDatabase, QFontMetrics, QPalette, QPainterPath, QIcon, QKeyEvent, QKeySequence, QScreen, QPen, QTextCursor
+from PyQt6.QtGui import QColor, QFont, QPainter, QLinearGradient, QBrush, QFontDatabase, QFontMetrics, QPalette, QPainterPath, QIcon, QKeyEvent, QKeySequence, QScreen, QPen, QTextCursor, QAction
 import os, json, sys, time, random
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -38,7 +38,14 @@ class ScaledTextEdit(QTextEdit):
         self.font_factor = 1.0
         self.setCursorWidth(0 if hide_cursor else 4) 
         self.apply_scale(1.0)
-        self.document().contentsChanged.connect(self._center_vertically)
+        
+        # [Fix] 禁止任何形式的文本选择，并强制设为普通箭头光标
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        
+        # self.document().contentsChanged.connect(self._center_vertically) # Removed manual centering
 
     def contextMenuEvent(self, event):
         """Disable default menu and show app menu"""
@@ -67,18 +74,14 @@ class ScaledTextEdit(QTextEdit):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._center_vertically()
+        # self._center_vertically()
 
     def _center_vertically(self):
-        # Calculate dynamic margin to center text vertically
-        doc_height = self.document().size().height()
-        widget_height = self.height()
-        if widget_height > doc_height:
-            # Move text slightly up (visual center) by reducing top margin
-            margin = (widget_height - doc_height) / 2 - 2
-            self.setViewportMargins(0, max(0, int(margin)), 0, 0)
-        else:
-            self.setViewportMargins(0, 0, 0, 0)
+        pass 
+        # Manual centering removed in favor of Layout centering
+        # doc_height = self.document().size().height()
+        # widget_height = self.height()
+        # ...
 
     def apply_scale(self, scale, family=None, font_factor=None):
         self.current_scale = scale
@@ -108,6 +111,8 @@ class ScaledTextEdit(QTextEdit):
             }}
             QTextEdit:empty {{ color: {placeholder_color}; }}
         """)
+        # Ensure geometry updates
+        self._on_content_changed()
 
     def _on_content_changed(self):
         metrics = QFontMetrics(self.font())
@@ -118,7 +123,9 @@ class ScaledTextEdit(QTextEdit):
         
         suggested_width = max_line_w + 10
         self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         doc_height = int(self.document().size().height())
+        self.setFixedHeight(doc_height) # Force height to match content for Layout centering
         self.sizeHintChanged.emit(suggested_width, doc_height)
 
     def keyPressEvent(self, event):
@@ -190,7 +197,7 @@ class SlotMachineLabel(QLabel):
                 font-family: "{self._family}";
                 border: none;
                 margin: 0px;
-                padding: 0px 0px 4px 0px; /* Top Right Bottom Left */
+                padding: 0px 0px 0px 0px; /* Top Right Bottom Left */
                 qproperty-indent: 0;
             }}
         """)
@@ -212,8 +219,8 @@ class SlotMachineLabel(QLabel):
         self._is_animating = True
         self._settled_count = 0
         
-        # 强制起始长度至少为 12 (撑满效果)
-        anim_len = max(len(self._target_text), 12)
+        # 强制起始长度至少为 10 (撑满效果)
+        anim_len = max(len(self._target_text), 10)
         self._initial_step_count = anim_len
         self._display_text = [random.choice(self._random_chars) for _ in range(anim_len)]
         self._timer.start()
@@ -958,14 +965,12 @@ class TranslatorWindow(QWidget):
         self.bottom_section.setFixedHeight(int(sect_h * s))
         if self.is_expanded:
             h = int(sect_h * s)
-            self.zh_input.setFixedHeight(h)
-            self.jp_display.setFixedHeight(h)
+            # Remove direct height setting to allow VCenter layout to work
             self.zh_slot.setFixedHeight(h)
             self.jp_slot.setFixedHeight(h)
         else:
             h = int(45 * s)
-            self.zh_input.setFixedHeight(h)
-            self.jp_display.setFixedHeight(h)
+            # Remove direct height setting to allow VCenter layout to work
             self.zh_slot.setFixedHeight(h)
             self.jp_slot.setFixedHeight(h)
         
@@ -1144,22 +1149,36 @@ class TranslatorWindow(QWidget):
             # 始终在屏幕下方居中显示
             self.copy_bubble.show_at(None, self.theme_mode)
 
+    def setVisible(self, visible):
+        # 只有当从隐藏变为显示时，才标记需要重置位置
+        if visible and not self.isVisible():
+            self._should_reset_pos = True
+        super().setVisible(visible)
+
     def showEvent(self, event):
         super().showEvent(event)
         self._dragging = False
         
-        # 处理窗口定位
-        wx, wy = self.m_cfg.window_pos
-        if wx == -1 or wy == -1:
-            # 居中显示
+        # [Task] 只有在真正"打开"窗口时才重置位置
+        # 这样可以避免在使用过程中因 resize 等原因导致的意外重置
+        if getattr(self, '_should_reset_pos', False):
+            self._should_reset_pos = False # 消费掉标记
+            
             screen = QApplication.primaryScreen().geometry()
-            size = self.frameGeometry().size()
-            x = (screen.width() - size.width()) // 2
-            y = (screen.height() - size.height()) // 2
-            self.move(x, y)
-        else:
-            # 恢复之前位置
-            self.move(wx, wy)
+            
+            # 计算居中位置
+            # Y轴固定在屏幕上方 15% 处，或者固定 150px
+            target_y = int(screen.height() * 0.15) 
+            if target_y < 100: target_y = 100 # 最小高度
+            
+            # X轴居中
+            win_w = self.width() if self.width() > 10 else 600
+            if hasattr(self, 'frameGeometry'):
+                win_w = self.frameGeometry().width()
+                
+            target_x = (screen.width() - win_w) // 2
+            
+            self.move(target_x, target_y)
 
         self.activateWindow()
         self.raise_()
@@ -1289,4 +1308,151 @@ class TranslatorWindow(QWidget):
                     data = json.load(f)
                     self.window_scale = data.get("scale", 1.0)
                     self.font_size_factor = data.get("font_scale", 1.0)
-            except: pass
+            except Exception:
+                pass
+
+def create_context_menu(parent_widget=None, config=None, signals_proxy=None):
+    """
+    通用右键菜单构建器
+    parent_widget: QMenu 的父窗口
+    config: ModelConfig 对象，用于读取当前状态
+    signals_proxy: 包含发射信号方法的对象 (例如 TranslatorWindow 或 Main)
+                   需要支持的方法: requestScaleChange, requestThemeChange, requestFontChange, requestOpenSettings, requestRestart, requestQuit
+    """
+    if config is None: 
+        from model_config import get_model_config
+        config = get_model_config()
+
+    menu = QMenu(parent_widget)
+    
+    # --- 样式美化 ---
+    is_light = config.theme_mode == "Light"
+    menu_bg = "#ffffff" if is_light else "#2d2d2d"
+    menu_fg = "#000000" if is_light else "#ffffff"
+    menu_sel = "#f0f0f0" if is_light else "#3d3d3d" # 浅色选中背景
+    border_col = "#e0e0e0" if is_light else "#454545"
+
+    menu.setStyleSheet(f"""
+        QMenu {{ background-color: {menu_bg}; color: {menu_fg}; border: 1px solid {border_col}; border-radius: 8px; padding: 4px; }}
+        QMenu::item {{ padding: 6px 24px 6px 12px; border-radius: 4px; margin: 2px; }}
+        QMenu::item:selected {{ background-color: {menu_sel}; }}
+        QMenu::item:checked {{ font-weight: bold; background-color: {menu_sel}; }}
+        QMenu::separator {{ height: 1px; background: {border_col}; margin: 4px 8px; }}
+    """)
+    
+    # 标题样式 (Label)
+    def make_title(text):
+        lbl = QLabel(text)
+        lbl.setStyleSheet(f"color: #888888; font-size: 11px; font-weight: bold; padding: 4px 12px;")
+        wa = QWidgetAction(menu)
+        wa.setDefaultWidget(lbl)
+        return wa
+
+    # === 模式选择 (Mode Selection) ===
+    # 强制获取最新 app_mode，config.data 是 dict
+    current_mode = config.data.get("app_mode", "asr")
+    
+    act_asr = QAction("中文识别模式", menu)
+    act_asr.setCheckable(True)
+    act_asr.setChecked(current_mode == "asr")
+    act_asr.triggered.connect(lambda: signals_proxy.requestAppModeChange.emit("asr") if signals_proxy else None)
+    menu.addAction(act_asr)
+    
+    act_translation = QAction("中日双显模式", menu)
+    act_translation.setCheckable(True)
+    act_translation.setChecked(current_mode == "translation")
+    act_translation.triggered.connect(lambda: signals_proxy.requestAppModeChange.emit("translation") if signals_proxy else None)
+    menu.addAction(act_translation)
+    
+    menu.addSeparator()
+
+    # === 1. 透明度滑块 (0% - 100%) ===
+    # menu.addAction(make_title("背景透明度"))
+    opacity_action = QWidgetAction(menu)
+    opacity_widget = QWidget()
+    op_layout = QHBoxLayout(opacity_widget)
+    op_layout.setContentsMargins(12, 4, 12, 4)
+    op_layout.setSpacing(10)
+    
+    op_lbl = QLabel("透明度")
+    op_lbl.setStyleSheet(f"color: {menu_fg};")
+    op_val = QLabel(f"{int(getattr(config, 'window_opacity', 0.95)*100)}%")
+    op_val.setFixedWidth(35)
+    op_val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    op_val.setStyleSheet(f"color: {menu_fg}; font-weight: bold;")
+    
+    op_slider = QSlider(Qt.Orientation.Horizontal)
+    op_slider.setRange(0, 100)
+    # config 可能没有 window_opacity, 默认 0.95
+    current_op = getattr(config, 'window_opacity', 0.95)
+    op_slider.setValue(int(current_op * 100))
+    op_slider.setFixedWidth(100)
+    
+    def on_op_change(v):
+        op_val.setText(f"{v}%")
+        f_val = v / 100.0
+        config.window_opacity = f_val
+        if hasattr(parent_widget, "update_background_opacity"):
+            parent_widget.update_background_opacity(f_val)
+        if signals_proxy and hasattr(signals_proxy, 'requestOpacityChange'): # 如果有定义这个信号
+            # 虽然 TranslatorWindow 没定义 requestOpacityChange，但可以直接调用 m_cfg set
+            pass
+
+    op_slider.valueChanged.connect(on_op_change)
+    # 松手保存
+    op_slider.sliderReleased.connect(config.save_config)
+    
+    op_layout.addWidget(op_lbl)
+    op_layout.addWidget(op_slider)
+    op_layout.addWidget(op_val)
+    opacity_action.setDefaultWidget(opacity_widget)
+    menu.addAction(opacity_action)
+    
+    menu.addSeparator()
+
+    # === 3. 主题 ===
+    menu.addAction(make_title("主题 / 字体"))
+    
+    act_dark = QAction("深色主题", menu)
+    act_dark.setCheckable(True)
+    act_dark.setChecked(config.theme_mode == "Dark")
+    act_dark.triggered.connect(lambda: signals_proxy.requestThemeChange.emit("Dark") if signals_proxy else None)
+    menu.addAction(act_dark)
+    
+    act_light = QAction("浅色主题", menu)
+    act_light.setCheckable(True)
+    act_light.setChecked(config.theme_mode == "Light")
+    act_light.triggered.connect(lambda: signals_proxy.requestThemeChange.emit("Light") if signals_proxy else None)
+    menu.addAction(act_light)
+    
+    # menu.addSeparator() # 紧凑一点
+
+    # === 4. 字体 ===
+    act_song = QAction("思源宋体", menu)
+    act_song.setCheckable(True)
+    act_song.setChecked(config.font_name == "思源宋体")
+    act_song.triggered.connect(lambda: signals_proxy.requestFontChange.emit("思源宋体") if signals_proxy else None)
+    menu.addAction(act_song)
+    
+    act_hei = QAction("思源黑体", menu)
+    act_hei.setCheckable(True)
+    act_hei.setChecked(config.font_name == "思源黑体")
+    act_hei.triggered.connect(lambda: signals_proxy.requestFontChange.emit("思源黑体") if signals_proxy else None)
+    menu.addAction(act_hei)
+
+    menu.addSeparator()
+    
+    # === 5. 系统操作 ===
+    # act_settings = QAction("更多设置...", menu)
+    # act_settings.triggered.connect(lambda: signals_proxy.requestOpenSettings.emit() if signals_proxy else None)
+    # menu.addAction(act_settings)
+    
+    act_restart = QAction("重启软件", menu)
+    act_restart.triggered.connect(lambda: signals_proxy.requestRestart.emit() if signals_proxy else None)
+    menu.addAction(act_restart)
+    
+    act_quit = QAction("彻底退出", menu)
+    act_quit.triggered.connect(lambda: signals_proxy.requestQuit.emit() if signals_proxy else None)
+    menu.addAction(act_quit)
+
+    return menu

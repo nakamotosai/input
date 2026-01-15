@@ -137,6 +137,7 @@ class ASRModeWindow(QWidget):
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(25, 25, 25, 25)
         self.main_layout.setSpacing(0)
+        self.main_layout.setAlignment(Qt.AlignmentFlag.AlignTop) # [Fix] 确保内容始终顶部对齐
 
         self.container = QFrame()
         self.container.setObjectName("asr_container")
@@ -162,7 +163,7 @@ class ASRModeWindow(QWidget):
         self.display = ScaledTextEdit(self, self.m_cfg.get_prompt("idle_zh"), "white", hide_cursor=True)
         self.display.setReadOnly(True)
         self.display.viewport().setCursor(Qt.CursorShape.ArrowCursor)
-        self.display.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # self.display.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding) # [Fix] Removed override to allow auto-centering with Fixed height
         
         # Waveform
         self.waveform = VoiceWaveform(self)
@@ -195,9 +196,9 @@ class ASRModeWindow(QWidget):
         self._placeholder_color = "rgba(255,255,255,0.5)"
         self._text_color = "white"
         
-        self.height_anim = QPropertyAnimation(self, b"minimumHeight")
-        self.height_anim.setDuration(200)
-        self.height_anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        self.height_anim = QPropertyAnimation(self, b"geometry")
+        self.height_anim.setDuration(1000) # [Task] 再次变慢，1秒
+        self.height_anim.setEasingCurve(QEasingCurve.Type.OutQuart) # [Task] 使用 OutQuart 实现丝滑刹车
         
         self.base_height = 50
         self.expanded_height = 100
@@ -226,12 +227,18 @@ class ASRModeWindow(QWidget):
 
     def apply_theme(self, theme="Dark"):
         self.theme_mode = theme
+        self.m_cfg.theme_mode = theme # [Fix] Sync config state immediately
+        # [Fix] 保证至少 0.01 的不透明度以防止鼠标穿透
+        opacity = max(0.01, getattr(self.m_cfg, 'window_opacity', 0.95))
+        
         if theme == "Light":
-            bg = "rgba(245, 245, 245, 0.98)"
+            # 使用配置的透明度，底色为白
+            bg = f"rgba(255, 255, 255, {opacity})"
             self._text_color = "#333333"
             self._placeholder_color = "rgba(0,0,0,0.4)"
         else:
-            bg = "rgba(45, 45, 45, 0.98)"
+            # 使用配置的透明度，底色为黑灰色
+            bg = f"rgba(45, 45, 45, {opacity})"
             self._text_color = "rgba(255,255,255,0.5)"
             self._placeholder_color = "rgba(255,255,255,0.5)"
         
@@ -254,8 +261,9 @@ class ASRModeWindow(QWidget):
         
         self._update_display_style()
 
-    def apply_scaling(self, scale, font_factor):
+    def apply_scaling(self, scale, font_factor, is_serif=False):
         self.window_scale = scale
+        self.m_cfg.window_scale = scale # [Fix] Sync config state
         self.font_size_factor = font_factor
 
         self.slot_label.apply_scale(scale, font_factor=font_factor)
@@ -322,21 +330,58 @@ class ASRModeWindow(QWidget):
         window_w = base_w + int(50 * s)
         self.setFixedWidth(window_w)
         
-        # 6. 高度动画
+        # 6. 高度动画 (改为 geometry 动画以锁定 Y 轴)
         current_h = self.container.height()
         target_win_h = target_h + 50 # Window height including shadow margins
         
-        # 如果高度变化显著 (>2px)，则执行动画
         if abs(target_h - current_h) > 2:
-            self.height_anim.stop()
-            self.height_anim.setStartValue(self.height())
-            self.height_anim.setEndValue(target_win_h)
-            self.height_anim.start()
+            # [Fix] 如果窗口还没显示（初始化阶段），绝对不要启动动画
+            # 否则动画会记录错误的 StartValue(0,0)，导致窗口出现后瞬间跳到左上角
+            if not self.isVisible():
+                self.resize(self.width(), target_win_h)
+                self.container.setMinimumHeight(target_h)
+                self.container.setMaximumHeight(target_h)
+                # 同时也需要更新一下 geometry 的高度，虽然 resize 应该够了，但为了保险
+                geo = self.geometry()
+                geo.setHeight(target_win_h)
+                self.setGeometry(geo)
+                return
+
+            try:
+                self.height_anim.finished.disconnect() # 断开之前的连接，防止堆积
+            except: pass
             
-            self.container.setMinimumHeight(target_h)
-            self.container.setMaximumHeight(target_h)
+            self.height_anim.stop()
+            
+            # [Critial Fix] 动画前必须解锁所有高度约束，否则布局系统会强制窗口瞬间跳变
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(16777215)
+            self.container.setMinimumHeight(0)
+            self.container.setMaximumHeight(16777215)
+            
+            # 使用 geometry 动画，强制保持 Top-Left 不变
+            start_geo = self.geometry()
+            end_geo =  start_geo.adjusted(0, 0, 0, 0) # Copy
+            end_geo.setHeight(target_win_h)
+            
+            self.height_anim.setStartValue(start_geo)
+            self.height_anim.setEndValue(end_geo)
+            
+            # 动画结束后锁定高度，保持刚性
+            def on_anim_finished():
+                self.setMinimumHeight(target_win_h)
+                self.setMaximumHeight(target_win_h)
+                self.container.setMinimumHeight(target_h)
+                self.container.setMaximumHeight(target_h)
+                
+            self.height_anim.finished.connect(on_anim_finished)
+            self.height_anim.start()
         else:
             # 直接应用
+            target_geo = self.geometry()
+            target_geo.setHeight(target_win_h)
+            self.setGeometry(target_geo)
+            
             self.setMinimumHeight(target_win_h)
             self.setMaximumHeight(target_win_h)
             self.container.setMinimumHeight(target_h)
@@ -416,6 +461,7 @@ class ASRModeWindow(QWidget):
             self.display.setVisible(False)
             self.slot_label.setVisible(False) # 确保占位符也被隐藏
             self.auto_clear_timer.stop()
+            self.idle_timer.stop() # [Fix] 录音时强制停止轮播
             # 不需要设置 display 的文本，因为已经隐藏了
         else:
             # 录音结束，恢复显示
@@ -444,12 +490,16 @@ class ASRModeWindow(QWidget):
         if e.button() == Qt.MouseButton.LeftButton: 
             self._start_drag(e.globalPosition().toPoint())
     def mouseMoveEvent(self, e):
+        # [Fix] 防粘连：如果移动时左键没按，强制停止拖动
+        if not (e.buttons() & Qt.MouseButton.LeftButton):
+            self._dragging = False
+            
         if self._dragging and self._drag_pos: 
             self.move(e.globalPosition().toPoint() - self._drag_pos)
+
     def mouseReleaseEvent(self, e): 
         if self._dragging:
             self._dragging = False
-            self.m_cfg.set_window_pos(self.x(), self.y())
 
     def eventFilter(self, obj, event):
         from PyQt6.QtCore import QEvent
@@ -458,6 +508,11 @@ class ASRModeWindow(QWidget):
                 self._start_drag(event.globalPosition().toPoint())
                 if obj == self.display: return True
         elif event.type() == QEvent.Type.MouseMove:
+            # [Fix] 防粘连保险丝
+            if not (event.buttons() & Qt.MouseButton.LeftButton):
+                self._dragging = False
+                return False
+                
             if self._dragging:
                 self.move(event.globalPosition().toPoint() - self._drag_pos)
                 return True
@@ -465,32 +520,38 @@ class ASRModeWindow(QWidget):
             if event.button() == Qt.MouseButton.LeftButton: 
                 if self._dragging:
                     self._dragging = False
-                    self.m_cfg.set_window_pos(self.x(), self.y())
         return super().eventFilter(obj, event)
+
+    def setVisible(self, visible):
+        # 只有当从隐藏变为显示时，才标记需要重置位置
+        if visible and not self.isVisible():
+            self._should_reset_pos = True
+        super().setVisible(visible)
 
     def showEvent(self, event):
         super().showEvent(event)
         self._dragging = False 
         
-        # 处理窗口定位
-        wx, wy = self.m_cfg.window_pos
-        screen = QApplication.primaryScreen().geometry()
-        
-        # 坐标有效性检查：必须在屏幕内（至少部分可见）
-        is_valid = (wx != -1 and wy != -1)
-        if is_valid:
-            if wx < -100 or wx > screen.width() or wy < -100 or wy > screen.height():
-                is_valid = False
-                
-        if not is_valid:
+        # [Task] 只有在真正"打开"窗口时才重置位置
+        # 这样可以避免在使用过程中因 resize 等原因导致的意外重置
+        if getattr(self, '_should_reset_pos', False):
+            self._should_reset_pos = False # 消费掉标记
+            
             screen = QApplication.primaryScreen().geometry()
-            size = self.frameGeometry().size()
-            x = (screen.width() - size.width()) // 2
-            y = (screen.height() - size.height()) // 2
-            self.move(x, y)
-        else:
-            self.move(wx, wy)
-
+            
+            # 计算居中位置
+            # Y轴固定在屏幕上方 15% 处，或者固定 150px
+            target_y = int(screen.height() * 0.15) 
+            if target_y < 100: target_y = 100 # 最小高度
+            
+            # X轴居中
+            win_w = self.width() if self.width() > 10 else 600
+            if hasattr(self, 'frameGeometry'):
+                win_w = self.frameGeometry().width()
+                
+            target_x = (screen.width() - win_w) // 2
+            
+            self.move(target_x, target_y)
         self.activateWindow()
         self.raise_()
         
@@ -503,25 +564,18 @@ class ASRModeWindow(QWidget):
         self.show_context_menu(event.globalPos())
 
     def show_context_menu(self, global_pos):
+        # 使用统一的新菜单
+        from ui_manager import create_context_menu
         self.activateWindow()
         self.raise_()
-        menu = QMenu() 
-        modes = [("asr", "中文直出模式"), ("translation", "中日双显模式")]
-        current_mode = self.m_cfg.app_mode
-        for m_id, m_name in modes:
-            display_name = f"{m_name}{'        ✔' if m_id == current_mode else ''}"
-            action = menu.addAction(display_name)
-            action.triggered.connect(lambda checked, mid=m_id: self.requestAppModeChange.emit(mid))
-        menu.addSeparator()
-        menu.addAction("详细设置").triggered.connect(self.requestOpenSettings.emit)
-        is_on = StartupManager.is_enabled()
-        autostart_text = f"开机自启{'        ✔' if is_on else ''}"
-        menu.addAction(autostart_text).triggered.connect(lambda: StartupManager.set_enabled(not is_on))
-        menu.addSeparator()
-        menu.addAction("重启应用").triggered.connect(self.requestRestart.emit)
-        menu.addAction("退出程序").triggered.connect(self.requestQuit.emit)
-        self.activateWindow() 
+        # 传入 self 作为 signals_proxy
+        menu = create_context_menu(self, self.m_cfg, self)
         menu.exec(global_pos)
+
+    def update_background_opacity(self, opacity):
+        """更新背景透明度"""
+        self.m_cfg.window_opacity = opacity
+        self.apply_theme(self.theme_mode)
 
     def _on_animation_finished(self):
         self.slot_label.setVisible(False)
@@ -556,6 +610,10 @@ class ASRModeWindow(QWidget):
             self.update_status("asr_loading")
             
     def _on_animation_finished(self):
+        # [Fix] 如果正在录音，动画结束后绝对不要显示 display
+        if self.waveform.isVisible():
+            return
+            
         # 动画结束后，显示 display，并确保 display 的内容也是最新的那句文案
         # 这样下面的 update_segment 逻辑（检测是否为占位符）就能正确启动定时器
         current_idle_text = self._idle_texts[self._idle_text_index]

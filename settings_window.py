@@ -212,46 +212,9 @@ class SettingsWindow(QDialog):
         mode_select_layout.addStretch()
         self.content_layout.addLayout(mode_select_layout)
 
-        # 7. 外观设置
-        
-        self._add_section("外观设置")
-        
-        self.content_layout.addWidget(self._create_label("主题"))
-        theme_layout = QHBoxLayout()
-        self.theme_group, self.theme_buttons = self._create_option_group(
-            [("Dark", "深色"), ("Light", "浅色")],
-            self.m_cfg.theme_mode,
-            self._on_theme_changed,
-            horizontal=True
-        )
-        for btn in self.theme_buttons.values(): theme_layout.addWidget(btn)
-        theme_layout.addStretch()
-        self.content_layout.addLayout(theme_layout)
-        
-        self.content_layout.addWidget(self._create_label("窗口缩放"))
-        scale_layout = QHBoxLayout()
-        scales = [(0.8, "80%"), (1.0, "100%"), (1.2, "120%"), (1.5, "150%")]
-        self.scale_group, self.scale_buttons = self._create_option_group(
-            scales,
-            self.m_cfg.window_scale,
-            self._on_scale_changed,
-            horizontal=True
-        )
-        for btn in self.scale_buttons.values(): scale_layout.addWidget(btn)
-        scale_layout.addStretch()
-        self.content_layout.addLayout(scale_layout)
-        
-        self.content_layout.addWidget(self._create_label("字体"))
-        font_layout = QHBoxLayout()
-        self.font_group, self.font_buttons = self._create_option_group(
-            [("思源宋体", "思源宋体"), ("思源黑体", "思源黑体")],
-            self.m_cfg.font_name,
-            self._on_font_changed,
-            horizontal=True
-        )
-        for btn in self.font_buttons.values(): font_layout.addWidget(btn)
-        font_layout.addStretch()
-        self.content_layout.addLayout(font_layout)
+        # 7. 外观设置 (已移至右键菜单)
+        # self._add_section("外观设置")
+        # ... (Removed code)
         
         # 7. 快捷键
         self._add_section("快捷键 (点击按钮录制)")
