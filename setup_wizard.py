@@ -12,6 +12,7 @@ from PyQt6.QtGui import QIcon, QPixmap
 from model_config import get_model_config, ASREngineType
 from model_downloader import get_downloader
 from ui_components import ModelOptionWidget
+from locales import t # [New]
 
 class SetupWizard(QDialog):
     """首次启动向导窗口"""
@@ -23,7 +24,7 @@ class SetupWizard(QDialog):
         self._setup_ui()
         
     def _setup_ui(self):
-        self.setWindowTitle("中日说 - 初始化向导")
+        self.setWindowTitle(t("wizard_title"))
         self.setFixedSize(600, 500)
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowTitleHint | Qt.WindowType.CustomizeWindowHint)
         
@@ -63,14 +64,14 @@ class SetupWizard(QDialog):
         nav_layout = QHBoxLayout(nav_bar)
         nav_layout.setContentsMargins(20, 15, 20, 15)
         
-        self.btn_back = QPushButton("上一步")
+        self.btn_back = QPushButton(t("wizard_prev"))
         self.btn_back.setObjectName("secondary")
         self.btn_back.clicked.connect(self._prev_page)
         
         self.page_indicator = QLabel("1/3")
         self.page_indicator.setStyleSheet("color: #666666;")
         
-        self.btn_next = QPushButton("下一步")
+        self.btn_next = QPushButton(t("wizard_next"))
         self.btn_next.clicked.connect(self._next_page)
         
         nav_layout.addWidget(self.btn_back)
@@ -93,15 +94,10 @@ class SetupWizard(QDialog):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(40, 40, 40, 40)
         
-        title = QLabel("欢迎使用 中日说")
+        title = QLabel(t("wizard_welcome_title"))
         title.setStyleSheet("font-size: 28px; font-weight: bold; color: white; margin-bottom: 20px;")
         
-        desc = QLabel(
-            "这是一款基于 AI 的日语语音输入与实时翻译工具。\n\n"
-            "在开始之前，我们需要下载一些必要的 AI 模型组件。\n"
-            "这些模型将运行在您的本地电脑上，确保隐私安全和低延迟。\n\n"
-            "请点击“下一步”继续。"
-        )
+        desc = QLabel(t("wizard_welcome_desc"))
         desc.setWordWrap(True)
         desc.setStyleSheet("font-size: 15px; color: #cccccc; line-height: 1.6;")
         
@@ -117,11 +113,11 @@ class SetupWizard(QDialog):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(40, 30, 40, 30)
         
-        title = QLabel("下载核心组件")
+        title = QLabel(t("wizard_model_title"))
         title.setStyleSheet("font-size: 20px; font-weight: bold; color: white;")
         layout.addWidget(title)
         
-        desc = QLabel("以下模型是程序运行所必须的，请确保下载安装完成。")
+        desc = QLabel(t("wizard_model_desc"))
         layout.addWidget(desc)
         
         layout.addSpacing(20)
@@ -142,7 +138,7 @@ class SetupWizard(QDialog):
         layout.addStretch()
         
         # 提示
-        hint = QLabel("提示: 如果下载速度较慢，请检查网络连接。支持断点续传。")
+        hint = QLabel(t("wizard_model_hint"))
         hint.setStyleSheet("color: #666666; font-style: italic; font-size: 12px;")
         layout.addWidget(hint)
         
@@ -154,17 +150,10 @@ class SetupWizard(QDialog):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(40, 40, 40, 40)
         
-        title = QLabel("准备就绪")
+        title = QLabel(t("wizard_finish_title"))
         title.setStyleSheet("font-size: 24px; font-weight: bold; color: white; margin-bottom: 20px;")
         
-        desc = QLabel(
-            "初始设置已完成！\n\n"
-            "您可以通过托盘图标右键菜单进入「详细设置」调整更多选项，\n"
-            "如更换翻译模型、修改快捷键或界面主题。\n\n"
-            "默认快捷键：\n"
-            "• 语音输入: Ctrl + Win (按住说话)\n"
-            "• 显示/隐藏: Alt + Win"
-        )
+        desc = QLabel(t("wizard_finish_desc"))
         desc.setWordWrap(True)
         desc.setStyleSheet("font-size: 15px; color: #cccccc; line-height: 1.6;")
         
@@ -185,9 +174,9 @@ class SetupWizard(QDialog):
         self.btn_back.setVisible(idx > 0)
         
         if idx == count - 1:
-            self.btn_next.setText("开始使用")
+            self.btn_next.setText(t("wizard_start"))
         else:
-            self.btn_next.setText("下一步")
+            self.btn_next.setText(t("wizard_next"))
             
         # 特定页面的逻辑
         if idx == 1: # Model page

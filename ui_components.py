@@ -11,6 +11,7 @@ from PyQt6.QtGui import QKeyEvent, QKeySequence, QFont, QPainter, QColor, QBrush
 from model_downloader import get_downloader, DownloadStatus
 from model_config import TranslatorEngineType, get_model_config
 from font_manager import FontManager
+from locales import t # [New]
 
 class DownloadWorker(QObject):
     """
@@ -139,7 +140,7 @@ class HotkeyButton(QPushButton):
         has_shift = (modifiers & Qt.KeyboardModifier.ShiftModifier) or key == Qt.Key.Key_Shift
         has_win = (modifiers & Qt.KeyboardModifier.MetaModifier) or key == Qt.Key.Key_Meta
         
-        mod_count = sum([has_ctrl, has_alt, has_shift, has_win])
+        mod_count = sum([bool(has_ctrl), bool(has_alt), bool(has_shift), bool(has_win)])
         
         if is_modifier_key and mod_count <= 1:
             return
@@ -249,17 +250,17 @@ class ModelOptionWidget(QWidget):
     def _check_status(self):
         dl_key = self._get_dl_key()
         if self.downloader.is_model_installed(dl_key):
-            self.status_lbl.setText("已安装")
+            self.status_lbl.setText(t("comp_installed"))
             self.status_lbl.setStyleSheet("font-size: 12px; color: #4ade80; background: transparent;")
             self.progress.hide()
         else:
-            self.status_lbl.setText("待安装 (点击开始)")
+            self.status_lbl.setText(t("comp_download_ready"))
             self.status_lbl.setStyleSheet("font-size: 12px; color: #f87171; background: transparent;")
 
     def start_download(self):
         dl_key = self._get_dl_key()
         self.btn.setEnabled(False)
-        self.status_lbl.setText("准备下载...")
+        self.status_lbl.setText(t("comp_downloading"))
         self.progress.setValue(0)
         self.progress.show()
         
@@ -294,11 +295,11 @@ class ModelOptionWidget(QWidget):
             self.selected.emit(self.model_id)
             self.btn.setChecked(True)
         elif status == DownloadStatus.FAILED:
-            self.status_lbl.setText("下载失败")
+            self.status_lbl.setText(t("comp_failed"))
             self.btn.setEnabled(True)
             self.progress.hide()
         elif status == DownloadStatus.EXTRACTING:
-            self.status_lbl.setText("正在解压...")
+            self.status_lbl.setText(t("comp_extracting"))
         else:
             if "%" not in msg:
                 self.status_lbl.setText(msg)
@@ -375,8 +376,8 @@ class TranslatorMonitorWidget(QFrame):
         
         # 引擎标题行
         engine_layout = QHBoxLayout()
-        self.engine_label = QLabel("当前活动引擎:")
-        self.engine_name = QLabel("未探测")
+        self.engine_label = QLabel(t("trans_engine_active"))
+        self.engine_name = QLabel(t("trans_status_offline")) # Init default
         self.engine_name.setWordWrap(True)
         engine_layout.addWidget(self.engine_label)
         engine_layout.addWidget(self.engine_name, 1)
@@ -384,8 +385,8 @@ class TranslatorMonitorWidget(QFrame):
         
         # 状态行
         status_layout = QHBoxLayout()
-        self.status_label = QLabel("运行状态:")
-        self.status_val = QLabel("离线")
+        self.status_label = QLabel(t("trans_engine_status"))
+        self.status_val = QLabel(t("trans_status_offline"))
         status_layout.addWidget(self.status_label)
         status_layout.addWidget(self.status_val)
         status_layout.addStretch()
@@ -453,19 +454,19 @@ class TranslatorMonitorWidget(QFrame):
 
     def set_status(self, engine_id: str, status_text: str, is_ready: bool):
         name_map = {
-            "online": "Google 在线翻译",
-            TranslatorEngineType.NLLB_600M_CT2.value: "NLLB 600M (智能本地引擎)",
-            None: "未加载"
+            "online": t("trans_google"),
+            TranslatorEngineType.NLLB_600M_CT2.value: t("trans_nllb"),
+            None: t("trans_status_offline")
         }
-        name = name_map.get(engine_id, "未知引擎")
+        name = name_map.get(engine_id, "Unknown Engine")
         self.engine_name.setText(name)
         
         if "完成" in status_text or "就绪" in status_text or "成功" in status_text or status_text == "idle":
-            self.status_val.setText("运行中 (Ready)")
+            self.status_val.setText(t("trans_status_run"))
         elif "切换" in status_text:
             self.status_val.setText(status_text)
         elif "加载" in status_text or "loading" in status_text:
-            self.status_val.setText("加载中 (Loading...)")
+            self.status_val.setText(t("trans_status_load"))
         else:
             self.status_val.setText(status_text)
         
@@ -499,11 +500,11 @@ class TranslatorSelectorWidget(QWidget):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(10)
         
-        self.btn_google = QPushButton("Google 在线翻译")
+        self.btn_google = QPushButton(t("trans_google"))
         self.btn_google.setCheckable(True)
         self.btn_google.clicked.connect(lambda: self._on_engine_clicked("online"))
         
-        self.btn_nllb = QPushButton("本地 AI 翻译引擎 (已暂停)")
+        self.btn_nllb = QPushButton(t("trans_nllb"))
         self.btn_nllb.setCheckable(True)
         self.btn_nllb.setEnabled(False) # [MODIFIED] Disable button
         self.btn_nllb.clicked.connect(lambda: self._on_engine_clicked(TranslatorEngineType.NLLB_600M_CT2.value))
@@ -716,15 +717,7 @@ class TeachingTip(QFrame):
         layout.setContentsMargins(15, 12, 15, 12)
         
         # 提示内容
-        self.label = QLabel(
-            "<b>快捷指令</b><br><br>"
-            "• <b>Win + Ctrl</b><br>"
-            "&nbsp;&nbsp;&nbsp;按住说话<br><br>"
-            "• <b>Win + Alt</b><br>"
-            "&nbsp;&nbsp;&nbsp;显隐窗口<br><br>"
-            "• <b>界面右键</b><br>"
-            "&nbsp;&nbsp;&nbsp;唤出菜单"
-        )
+        self.label = QLabel(t("tip_hotkeys"))
         self.label.setWordWrap(True)
         self.label.setFixedWidth(200) 
         self.label.setStyleSheet("color: #e0e0e0; font-size: 13px; line-height: 1.4;")
@@ -732,7 +725,7 @@ class TeachingTip(QFrame):
         layout.addWidget(self.label)
         
         # 关闭按钮
-        close_btn = QPushButton("OK")
+        close_btn = QPushButton(t("confirm"))
         close_btn.setFixedWidth(60)
         close_btn.setFixedHeight(24)
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)

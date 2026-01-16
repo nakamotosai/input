@@ -217,12 +217,15 @@ class ModelConfig:
         self._wizard_completed = True
         self._theme_mode = "Dark"
         self._window_scale = 1.0
-        self._font_name = "思源宋体"
+        self._font_name = "黑体"
         self._app_mode = "asr"
+        self._emoji_mode = "trigger" # [New] Default Emoji mode
         self._tip_shown = False
         self._show_on_start = True
         self._window_x = -1 # -1 表示初次启动
         self._window_y = -1
+        self._language = "zh" # [New] Language support
+        self._custom_idle_texts = [] # [New] User custom idle texts
         self.data = {}
         
         # ===== 日志和初始化 =====
@@ -286,29 +289,14 @@ class ModelConfig:
                     self._show_on_start = self.data.get('show_on_start', self._show_on_start)
                     self._window_x = self.data.get('window_x', -1)
                     self._window_y = self.data.get('window_y', -1)
+                    self._language = self.data.get('language', 'zh') # [New] Load language
+                    self._custom_idle_texts = self.data.get('custom_idle_texts', []) # [New] Load custom idle texts
         except Exception as e:
-            try:
-                log_path = os.path.join(self.DATA_DIR, "error.log")
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(f"[_load_config] {e}\n")
-            except: pass
+            pass
         
-        # 加载学习到的规则 (额外文件，不污染主配置)
-        self.learned_rules_path = os.path.join(self.DATA_DIR, "learned_rules.json")
-        self.learned_no_period_words = {} # 词 -> 拒绝次数
-        self.learned_force_period_words = {} # 词 -> 强制次数
-        
-        if os.path.exists(self.learned_rules_path):
-            try:
-                with open(self.learned_rules_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    # 兼容旧格式（直接是dict）和新格式（{no_period:..., force_period:...}）
-                    if "no_period" in data:
-                        self.learned_no_period_words = data["no_period"]
-                        self.learned_force_period_words = data.get("force_period", {})
-                    else:
-                        self.learned_no_period_words = data
-            except: pass
+        # [Removed] 学习规则逻辑已废弃
+        self.learned_no_period_words = {} 
+        self.learned_force_period_words = {}
 
     def save_config(self):
         """保存当前配置到文件"""
@@ -339,6 +327,8 @@ class ModelConfig:
         # 保存窗口位置 (如果存在)
         if hasattr(self, "_window_x"): data["window_x"] = self._window_x
         if hasattr(self, "_window_y"): data["window_y"] = self._window_y
+        data["language"] = self._language # [New] Save language
+        data["custom_idle_texts"] = self._custom_idle_texts # [New] Save custom idle texts
 
         try:
             with open(self.CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -658,6 +648,26 @@ class ModelConfig:
         self._window_x = x
         self._window_y = y
         self.save_config()
+
+    @property
+    def language(self) -> str:
+        return getattr(self, '_language', 'zh')
+
+    @language.setter
+    def language(self, value: str):
+        if value in ['zh', 'jp']:
+            self._language = value
+            self.save_config()
+
+    @property
+    def custom_idle_texts(self) -> List[str]:
+        return self._custom_idle_texts
+
+    @custom_idle_texts.setter
+    def custom_idle_texts(self, value: List[str]):
+        if isinstance(value, list) and len(value) >= 1:
+            self._custom_idle_texts = value
+            self.save_config()
 
 
 # ===== 全局单例 =====

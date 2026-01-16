@@ -12,6 +12,7 @@ import sys
 import numpy as np
 import multiprocessing
 import traceback
+import threading
 from abc import ABC, abstractmethod
 from typing import Optional, List
 from PyQt6.QtCore import QObject, pyqtSignal, QThread, pyqtSlot
@@ -51,18 +52,8 @@ def clean_asr_output(text: str, mode: str = "raw", is_insertion: bool = False) -
     
     # 2. 基础标点优化 (无论什么模式都执行)
     # A. 智能标点处理 (Smart Punctuation)
-    base_markers = r'然后|但是|可是|那个|嗯|呃|希望他|觉得他|的话|的时候|而且|就是|其实|所以|只是|不过|因为|所以|或者|并且|所以说|或者是|比如说'
-    
-    # 获取学习到的规则
-    try:
-        cfg = get_model_config()
-        learned = cfg.get_learned_markers_regex()
-        if learned:
-            incomplete_markers = f'({base_markers}|{learned})[。！？]$'
-        else:
-            incomplete_markers = f'({base_markers})[。！？]$'
-    except:
-        incomplete_markers = f'({base_markers})[。！？]$'
+    # [Removed] 废弃“所以/但是”等后缀不加句号的逻辑
+    incomplete_markers = r'$^' # 永远不匹配
 
     # 逻辑 1: 处理多句逻辑 - “留逗去句”
     # 如果检测到内部句号，将其替换为逗号 (用户反馈：两句话之间的逗号还是需要)
@@ -190,173 +181,80 @@ def clean_asr_output(text: str, mode: str = "raw", is_insertion: bool = False) -
         
     return text.strip()
 
-# ===== ONNX 推理独立进程核心函数 =====
-def onnx_inference_worker(model_path, input_queue, output_queue, log_file=None):
-    """
-    独立的 ONNX 推理进程
-    
-    重要：model_path 必须是在主进程中已解析好的绝对路径
-    """
-    try:
-        import sys
-        if log_file:
-            try:
-                import os
-                sys.stdout = open(log_file, "a", encoding="utf-8")
-                sys.stderr = sys.stdout
-            except: pass
-
-        import sherpa_onnx
-        print(f"[ASR-Proc] 正在加载 Sherpa-ONNX 模型: {model_path}")
-        print(f"[ASR-Proc] 模型路径存在: {os.path.exists(model_path)}")
-        
-        # 定义核心文件
-        model_file = os.path.join(model_path, "model.int8.onnx")
-        if not os.path.exists(model_file):
-            model_file = os.path.join(model_path, "model.onnx")
-            
-        tokens_file = os.path.join(model_path, "tokens.txt")
-        
-        print(f"[ASR-Proc] 模型文件: {model_file}, 存在: {os.path.exists(model_file)}")
-        print(f"[ASR-Proc] Tokens文件: {tokens_file}, 存在: {os.path.exists(tokens_file)}")
-        
-        if not os.path.exists(model_file) or not os.path.exists(tokens_file):
-            raise FileNotFoundError(f"核心模型文件缺失，请检查 {model_path} 目录")
-
-        # 初始化识别器
-        recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
-            model=model_file,
-            tokens=tokens_file,
-            use_itn=True,  # 启用内置ITN以恢复标点
-            language="auto", # 显式指定自动检测
-            num_threads=4
-        )
-            
-        print(f"[ASR-Proc] 模型加载成功")
-        sys.stdout.flush()
-        
-        # 通知主进程已就绪
-        output_queue.put(("ready", True))
-        
-        while True:
-            # 等待任务
-            task = input_queue.get()
-            if task is None: 
-                break
-            
-            try:
-                # 转化数据
-                audio_data = np.array(task, dtype=np.float32)
-                
-                # Sherpa 极简推理流程
-                stream = recognizer.create_stream()
-                stream.accept_waveform(16000, audio_data)
-                recognizer.decode_stream(stream)
-                
-                # 直接返回识别结果，由主进程根据模式进行次级清理
-                text = stream.result.text
-                output_queue.put(("result", text))
-                
-            except Exception as e:
-                # 在打包后的无控制台模式下，sys.stdout 可能为 None
-                try: print(f"[ASR-Proc] 转写中错误: {e}")
-                except: pass
-                output_queue.put(("result", ""))
-            
-    except Exception as e:
-        err = f"ASR进程崩溃: {str(e)}"
-        try: 
-            print(err)
-            traceback.print_exc()
-        except: pass
-        output_queue.put(("fatal", err))
-    finally:
-        try: print("[ASR-Proc] 进程已退出")
-        except: pass
-
-
-# ===== 核心引擎代理 =====
+# ===== 核心引擎代理 (重构为进程内线程安全模式) =====
 class OnnxASREngine:
     def __init__(self):
         self.is_loaded = False
-        self.input_queue = multiprocessing.Queue()
-        self.output_queue = multiprocessing.Queue()
-        self.process = None
+        self.recognizer = None
+        self._lock = threading.Lock()
     
     def load(self, model_path: str) -> bool:
         """
-        加载 ASR 模型
-        
-        重要：model_path 必须是已解析好的绝对路径
+        加载 ASR 模型 (在主进程中执行，规避多进程权限及环境冲突)
         """
         try:
-            if self.process and self.process.is_alive():
-                self.unload()
+            import os
+            import sherpa_onnx
             
             # 验证模型路径
             if not model_path or not os.path.exists(model_path):
                 print(f"[ASR-Engine] 模型路径无效: {model_path}")
                 return False
             
-            # 获取日志目录
-            from model_config import get_model_config
-            cfg = get_model_config()
-            log_file = os.path.join(cfg.DATA_DIR, "asr_process.log")
+            print(f"[ASR-Engine] 正在主进程加载 Sherpa-ONNX 模型: {model_path}")
 
-            print(f"[ASR-Engine] 启动 ASR 进程，模型路径: {model_path}")
-
-            self.process = multiprocessing.Process(
-                target=onnx_inference_worker,
-                args=(model_path, self.input_queue, self.output_queue, log_file),
-                daemon=True
-            )
-            self.process.start()
+            # 定义核心文件
+            model_file = os.path.join(model_path, "model.int8.onnx")
+            if not os.path.exists(model_file):
+                model_file = os.path.join(model_path, "model.onnx")
+                
+            tokens_file = os.path.join(model_path, "tokens.txt")
             
-            # 等待确认信号
-            try:
-                msg_type, val = self.output_queue.get(timeout=30)
-                if msg_type == "ready":
-                    self.is_loaded = True
-                    print(f"[ASR-Engine] ASR 进程就绪")
-                    return True
-                elif msg_type == "fatal":
-                    print(f"[ASR-Engine] ASR 进程启动失败: {val}")
-            except Exception as e:
-                print(f"[ASR-Engine] 等待 ASR 进程超时: {e}")
-            return False
+            if not os.path.exists(model_file) or not os.path.exists(tokens_file):
+                print(f"[ASR-Engine] 核心文件缺失: {model_file} 或 {tokens_file}")
+                return False
+
+            # 初始化识别器
+            self.recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+                model=model_file,
+                tokens=tokens_file,
+                use_itn=True,
+                language="auto",
+                num_threads=4
+            )
+            
+            self.is_loaded = True
+            print(f"[ASR-Engine] 模型加载成功")
+            return True
+                
         except Exception as e:
-            print(f"[ASR-Engine] 启动异常: {e}")
+            print(f"[ASR-Engine] 加载异常: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def transcribe(self, audio_data) -> str:
-        if not self.is_loaded or not self.process.is_alive():
+        if not self.is_loaded or not self.recognizer:
             return ""
         try:
-            audio_list = audio_data.tolist() if isinstance(audio_data, np.ndarray) else audio_data
-            self.input_queue.put(audio_list)
-            msg_type, val = self.output_queue.get(timeout=30)
-            return val
-        except:
+            # 转换数据为数组
+            import numpy as np
+            audio_array = np.array(audio_data, dtype=np.float32)
+            
+            with self._lock:
+                stream = self.recognizer.create_stream()
+                stream.accept_waveform(16000, audio_array)
+                self.recognizer.decode_stream(stream)
+                text = stream.result.text
+            return text
+        except Exception as e:
+            print(f"[ASR-Engine] 转写失败: {e}")
             return ""
 
     def unload(self):
-        if self.process and self.process.is_alive():
-            try:
-                self.input_queue.put(None)
-                self.process.join(timeout=3)
-                if self.process.is_alive(): 
-                    self.process.terminate()
-                    self.process.join(timeout=1)
-            except: pass
-            finally:
-                try:
-                    self.input_queue.close()
-                    self.output_queue.close()
-                except: pass
-        self.process = None
-        self.is_loaded = False
-        self.input_queue = multiprocessing.Queue()
-        self.output_queue = multiprocessing.Queue()
+        with self._lock:
+            self.recognizer = None
+            self.is_loaded = False
 
 # ===== ASR Worker & Manager =====
 class ASRWorker(QObject):

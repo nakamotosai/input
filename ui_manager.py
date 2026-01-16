@@ -12,6 +12,7 @@ LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
 
 from font_manager import FontManager
 from asr_manager import ASRManager
+from locales import t # [New]
 
 
 class ScaledTextEdit(QTextEdit):
@@ -186,13 +187,12 @@ class SlotMachineLabel(QLabel):
         self._font_factor = 1.0
         self._family = FontManager.get_font(True)
         
-        # 字符库定义
+        # 字符库定义 - 默认使用中日文混合字符
         self._charsets = {
-            "default": "あいうえおアイウエオ0123456789!?$&%#@*",
-            "zh": "的一是在不了有和人这中大为上个国我以要他时来用们生到作地于出就分对成会可主发年样能下过子说产种面而方后多定行学法所民得意经十三之进着等部度",
-            "jp": "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをんアイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン"
+            "default": "あいうえおアイウエオ的一是在不了有和人中大为他时来用们生到作地于出就分对成会可主发年样能下过子说产种面而方后多定行学法所民得意经十三之进着等部度",
+            "mixed": "的一是在不了有和人这中大为上个国我以要他时来用们生到作地于出就分对成会可主发年样能下过子说产种面而方后多定行学法所民得意经十三之进着等部度あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをんアイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン"
         }
-        self._random_chars = self._charsets["default"]
+        self._random_chars = self._charsets["mixed"]
         
         self._timer = QTimer(self)
         self._timer.setInterval(40) # 约 25fps 的急速变换
@@ -211,9 +211,8 @@ class SlotMachineLabel(QLabel):
         self.apply_scale(self._scale)
 
     def set_character_set(self, charset_name):
-        """设置使用的随机字符库: 'zh', 'jp', 'default'"""
-        if charset_name in self._charsets:
-            self._random_chars = self._charsets[charset_name]
+        """设置使用的随机字符库 (强制使用中日混合)"""
+        self._random_chars = self._charsets["mixed"]
 
     def apply_scale(self, scale, family=None, font_factor=None):
         self._scale = scale
@@ -854,7 +853,7 @@ class TranslatorWindow(QWidget):
         self.top_layout.setSpacing(5)
         self.top_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         self.jp_badge = Badge("日>", "rgba(0,0,0,0.1)", "white")
-        self.jp_display = ScaledTextEdit(self, "翻訳を待機中", "white", hide_cursor=True)
+        self.jp_display = ScaledTextEdit(self, t("asr_placeholder_idle"), "white", hide_cursor=True)
         self.jp_display.setReadOnly(True) 
         self.jp_display.viewport().setCursor(Qt.CursorShape.ArrowCursor) 
         self.jp_display.sizeHintChanged.connect(self._handle_resizing)
@@ -864,7 +863,7 @@ class TranslatorWindow(QWidget):
         text_shadow.setBlurRadius(4); text_shadow.setXOffset(1); text_shadow.setYOffset(1); text_shadow.setColor(QColor(0, 0, 0, 40))
         self.jp_display.setGraphicsEffect(text_shadow)
         
-        self.jp_slot = SlotMachineLabel(self, "翻訳を待機中", "white")
+        self.jp_slot = SlotMachineLabel(self, t("asr_placeholder_idle"), "white")
         self.jp_slot.set_character_set("jp")
         self.jp_slot.setVisible(False)
         # [Task] Dual Mode uses Left alignment with padding
@@ -885,12 +884,12 @@ class TranslatorWindow(QWidget):
         self.bottom_layout.setSpacing(5)
         self.bottom_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         self.zh_badge = Badge("中>", "rgba(0,0,0,0.05)", "#333333")
-        self.zh_input = ScaledTextEdit(self, "说点中文...", "#333333")
+        self.zh_input = ScaledTextEdit(self, t("asr_placeholder_idle"), "#333333")
         self.zh_input.sizeHintChanged.connect(self._handle_resizing)
         self.zh_input.textChanged.connect(self._on_text_changed)
         self.zh_input.submitPressed.connect(self._on_submit)
         
-        self.zh_slot = SlotMachineLabel(self, "说点中文...", "#333333")
+        self.zh_slot = SlotMachineLabel(self, t("asr_placeholder_idle"), "#333333")
         self.zh_slot.set_character_set("zh")
         self.zh_slot.setVisible(False)
         # [Task] Dual Mode uses Left alignment with padding
@@ -1121,6 +1120,9 @@ class TranslatorWindow(QWidget):
         self.jp_badge.apply_scale(s, family); self.zh_badge.apply_scale(s, family)
         self.jp_display.apply_scale(s, family, f); self.zh_input.apply_scale(s, family, f)
         self.zh_slot.apply_scale(s, family, f); self.jp_slot.apply_scale(s, family, f)
+        # [Fix] 这里的字符集应该始终跟随设置，防止切换后还是旧语言的滚动文字
+        self.zh_slot.set_character_set("zh") # 中文部分始终是 zh
+        self.jp_slot.set_character_set("jp") # 日文部分始终是 jp
         self.voice_btn.apply_scale(s)
         self.clear_btn.apply_scale(s)
         self._handle_resizing(); self._apply_theme()
@@ -1354,6 +1356,9 @@ class TranslatorWindow(QWidget):
             
             if is_asr_ready:
                 QTimer.singleShot(1000, self.zh_slot.settle_one_by_one)
+            else:
+                # [Fix] 增加安全保险丝
+                QTimer.singleShot(1500, self.zh_slot.settle_one_by_one)
             
         current_jp = self.jp_display.toPlainText()
         if not current_jp or current_jp == "翻訳を待機中":
@@ -1362,14 +1367,23 @@ class TranslatorWindow(QWidget):
             self.jp_slot.start_animation()
             # 日文翻译一般切过来就是就绪的（除非正在下模型），我们也给个 1 秒仪式感
             QTimer.singleShot(1000, self.jp_slot.settle_one_by_one)
+            # [Fix] 安全保险丝
+            QTimer.singleShot(1500, self.jp_slot.settle_one_by_one)
 
     def _do_translation(self):
         text = self.zh_input.toPlainText()
         if text.strip(): 
             self.requestTranslation.emit(text)
     def set_zh_text(self, text): 
-        """Update Chinese text without immediate forced translation; let debounce handle it"""
+        """Update Chinese text from ASR; signals are blocked to avoid redundant translation triggers"""
+        self.zh_input.blockSignals(True)
         self.zh_input.setPlainText(text)
+        self.zh_input.blockSignals(False)
+        # 手动触发布局更新和自动清理计时器，但不触发 handle_translation_request
+        self._handle_resizing()
+        if text.strip():
+            self.auto_clear_zh_timer.start()
+        # [Fix] 同时需要告知文字框内容变动，以便它自己计算高度等
         self.zh_input._on_content_changed()
 
     def _handle_record_start(self): 
@@ -1425,11 +1439,11 @@ class TranslatorWindow(QWidget):
             if self.jp_slot.isVisible():
                 self.jp_slot.settle_one_by_one()
                 
-            self.jp_display.setPlaceholderText("翻訳を待機中")
-            self.zh_input.setPlaceholderText("说点中文...")
-            if self.m_cfg.is_placeholder_text(self.zh_input.toPlainText()) or self.zh_input.toPlainText() == "说点中文...":
+            self.jp_display.setPlaceholderText(t("asr_placeholder_idle"))
+            self.zh_input.setPlaceholderText(t("asr_placeholder_idle"))
+            if self.m_cfg.is_placeholder_text(self.zh_input.toPlainText()) or self.zh_input.toPlainText() == t("asr_placeholder_idle"):
                 self.zh_input.clear()
-            if self.m_cfg.is_placeholder_text(self.jp_display.toPlainText()) or self.jp_display.toPlainText() == "翻訳を待机中":
+            if self.m_cfg.is_placeholder_text(self.jp_display.toPlainText()) or self.jp_display.toPlainText() == t("asr_placeholder_idle"):
                 self.jp_display.clear()
 
     def update_segment(self, text):
@@ -1539,7 +1553,7 @@ def create_context_menu(parent_widget=None, config=None, signals_proxy=None):
     op_layout.setContentsMargins(6, 6, 6, 0) # Keep user's preferred margins
     op_layout.setSpacing(0)
     
-    op_lbl = QLabel("透明度")
+    op_lbl = QLabel(t("menu_opacity"))
     op_lbl.setStyleSheet(f"color: {menu_fg}; font-weight: bold;")
     
     op_slider = QSlider(Qt.Orientation.Horizontal)
@@ -1565,13 +1579,18 @@ def create_context_menu(parent_widget=None, config=None, signals_proxy=None):
     menu.addAction(opacity_action)
 
     # === 2. 详细设置面板 (Settings) ===
-    act_settings = QAction("详细设置面板", menu)
+    act_settings = QAction(t("menu_settings"), menu)
     def safe_open_settings():
+        print("[DEBUG] Menu 'Settings' triggered") # [Debug]
         if signals_proxy:
             try:
                 if hasattr(signals_proxy, 'requestOpenSettings'):
+                    print(f"[DEBUG] Emitting requestOpenSettings from {signals_proxy}") # [Debug]
                     signals_proxy.requestOpenSettings.emit()
-            except: pass
+                else:
+                    print(f"[DEBUG] signals_proxy {signals_proxy} has no 'requestOpenSettings'") # [Debug]
+            except Exception as e:
+                print(f"[DEBUG] Error emitting settings signal: {e}") # [Debug]
     act_settings.triggered.connect(safe_open_settings)
     menu.addAction(act_settings)
     
@@ -1584,32 +1603,32 @@ def create_context_menu(parent_widget=None, config=None, signals_proxy=None):
     # === 3. 模式选择 (Modes) ===
     current_mode = getattr(config, 'app_mode', 'asr')
     
-    act_asr = QAction(get_label("中文识别模式", current_mode == "asr"), menu)
+    act_asr = QAction(get_label(t("menu_mode_asr"), current_mode == "asr"), menu)
     act_asr.triggered.connect(lambda: signals_proxy.requestAppModeChange.emit("asr") if signals_proxy else None)
     menu.addAction(act_asr)
     
-    act_translation = QAction(get_label("中日双显模式", current_mode == "translation"), menu)
+    act_translation = QAction(get_label(t("menu_mode_trans"), current_mode == "translation"), menu)
     act_translation.triggered.connect(lambda: signals_proxy.requestAppModeChange.emit("translation") if signals_proxy else None)
     menu.addAction(act_translation)
     
     menu.addSeparator()
 
     # === 4. 主题与字体 (Themes) ===
-    act_dark = QAction(get_label("深色主题", config.theme_mode == "Dark"), menu)
+    act_dark = QAction(get_label(t("menu_theme_dark"), config.theme_mode == "Dark"), menu)
     act_dark.triggered.connect(lambda: signals_proxy.requestThemeChange.emit("Dark") if signals_proxy else None)
     menu.addAction(act_dark)
 
-    act_light = QAction(get_label("浅色主题", config.theme_mode == "Light"), menu)
+    act_light = QAction(get_label(t("menu_theme_light"), config.theme_mode == "Light"), menu)
     act_light.triggered.connect(lambda: signals_proxy.requestThemeChange.emit("Light") if signals_proxy else None)
     menu.addAction(act_light)
     
     menu.addSeparator()
     
-    act_song = QAction(get_label("思源宋体", config.font_name == "思源宋体"), menu)
+    act_song = QAction(get_label(t("menu_font_song"), config.font_name == "思源宋体"), menu)
     act_song.triggered.connect(lambda: signals_proxy.requestFontChange.emit("思源宋体") if signals_proxy else None)
     menu.addAction(act_song)
     
-    act_hei = QAction(get_label("思源黑体", config.font_name == "思源黑体"), menu)
+    act_hei = QAction(get_label(t("menu_font_hei"), config.font_name == "思源黑体"), menu)
     act_hei.triggered.connect(lambda: signals_proxy.requestFontChange.emit("思源黑体") if signals_proxy else None)
     menu.addAction(act_hei)
 
@@ -1621,7 +1640,7 @@ def create_context_menu(parent_widget=None, config=None, signals_proxy=None):
     try: is_autostart = config.auto_start
     except: pass
     
-    act_autostart = QAction(get_label("开机自启", is_autostart), menu)
+    act_autostart = QAction(get_label(t("menu_autostart"), is_autostart), menu)
     def on_autostart_trigger():
         new_state = not is_autostart
         setattr(config, 'auto_start', new_state)
@@ -1632,24 +1651,24 @@ def create_context_menu(parent_widget=None, config=None, signals_proxy=None):
     menu.addAction(act_autostart)
 
     # 快捷键提示
-    act_tip = QAction("快捷键提示", menu)
+    act_tip = QAction(t("menu_tip"), menu)
     if hasattr(parent_widget, "toggle_teaching_tip"):
         act_tip.triggered.connect(parent_widget.toggle_teaching_tip)
     menu.addAction(act_tip)
     
-    act_restart = QAction("重启中日说", menu)
+    act_restart = QAction(t("menu_restart"), menu)
     act_restart.triggered.connect(lambda: signals_proxy.requestRestart.emit() if signals_proxy else None)
     menu.addAction(act_restart)
     
     # 官网链接
-    act_website = QAction("中日说官网", menu)
+    act_website = QAction(t("menu_website"), menu)
     def open_website():
         import webbrowser
         webbrowser.open("https://input.saaaai.com/")
     act_website.triggered.connect(open_website)
     menu.addAction(act_website)
     
-    act_quit = QAction("彻底退出", menu)
+    act_quit = QAction(t("menu_quit"), menu)
     act_quit.triggered.connect(lambda: signals_proxy.requestQuit.emit() if signals_proxy else None)
     menu.addAction(act_quit)
 

@@ -20,29 +20,30 @@ DEFAULT_TRANSLATING = "翻译中..."
 class ASRIconButton(QPushButton):
     def __init__(self, parent=None, icon_type="mic"):
         super().__init__(parent)
-        self.setFixedSize(50, 50)
+        # [Task] 扩大 widget 尺寸到 100，允许发光半径超出 50 像素的限制
+        self.setFixedSize(100, 100)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.icon_type = icon_type
         self._is_recording = False
         self._pulse_radius = 0
-        self._pulse_max = 20
+        self._pulse_max = 30 # [Task] 增加扩散最大半径
         self.scale = 1.0
         self.bg_color = QColor(255, 255, 255, 25)
         self.icon_color = QColor(200, 200, 200)
-        self.pulse_color = QColor(255, 60, 60, 100)
+        self.pulse_color = QColor(255, 60, 60, 80) # [Task] 降低透明度 100 -> 80
         
         self.pulse_anim = QPropertyAnimation(self, b"pulse_radius")
         self.pulse_anim.setDuration(1200)
         self.pulse_anim.setLoopCount(-1)
         self.pulse_anim.setStartValue(0)
-        self.pulse_anim.setEndValue(20) 
+        self.pulse_anim.setEndValue(15) # [Task] 20 -> 15
         self.pulse_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
     def apply_scale(self, scale):
         self.scale = scale
-        size = int(50 * scale)
+        size = int(100 * scale)
         self.setFixedSize(size, size)
-        self._pulse_max = 20 * scale
+        self._pulse_max = 30 * scale # [Task] 同步比例
         self.pulse_anim.stop()
         self.pulse_anim.setEndValue(self._pulse_max)
         if self._is_recording:
@@ -71,10 +72,10 @@ class ASRIconButton(QPushButton):
         
         if self._is_recording and self.icon_type == "mic":
             painter.setPen(Qt.PenStyle.NoPen)
-            alpha = int(100 * (1.0 - self._pulse_radius / self._pulse_max if self._pulse_max > 0 else 0))
+            alpha = int(80 * (1.0 - self._pulse_radius / self._pulse_max if self._pulse_max > 0 else 0)) 
             c = QColor(self.pulse_color.red(), self.pulse_color.green(), self.pulse_color.blue(), alpha)
             painter.setBrush(QBrush(c))
-            r = int(self._pulse_radius + 5 * self.scale)
+            r = int(self._pulse_radius + 16 * self.scale) # [Task] 从按钮边缘（约16-20px）开始扩散
             painter.drawEllipse(center, r, r)
             
         painter.setPen(Qt.PenStyle.NoPen)
@@ -176,7 +177,7 @@ class ASRJpModeWindow(QWidget):
         self.clear_btn = ClearButton(self.container)
         self.clear_btn.clicked.connect(self.clear_input)
         
-        self.voice_btn = ASRIconButton(self, "mic")
+        self.voice_btn = ASRIconButton(self, "mic") # [Task] Parent is self to break out of container clipping
         self.voice_btn.pressed.connect(self.requestRecordStart.emit)
         self.voice_btn.released.connect(self.requestRecordStop.emit)
 
@@ -190,7 +191,7 @@ class ASRJpModeWindow(QWidget):
         self.container_layout.addWidget(self.display, 1)
         self.container_layout.addWidget(self.slot_label, 1)
         self.container_layout.addWidget(self.waveform, 1)
-        self.container_layout.addWidget(self.voice_btn)
+        self.container_layout.addSpacing(int(45 * self.window_scale)) # [Task] Placeholder for floating voice_btn
 
         self.container.installEventFilter(self)
         self.display.installEventFilter(self)
@@ -354,6 +355,7 @@ class ASRJpModeWindow(QWidget):
                 self.container.setMaximumHeight(target_container_h)
                 
             self.height_anim.finished.connect(on_anim_finished)
+            self.height_anim.valueChanged.connect(lambda: self._update_voice_btn_pos()) # [Task] 动画中同步更新位置
             self.height_anim.start()
         else:
             target_container_h = self.expanded_height if self.is_expanded else self.base_height
@@ -363,10 +365,22 @@ class ASRJpModeWindow(QWidget):
             target_geo.setHeight(target_window_h)
             self.setGeometry(target_geo)
             
-            self.setMinimumHeight(target_window_h)
-            self.setMaximumHeight(target_window_h)
             self.container.setMinimumHeight(target_container_h)
             self.container.setMaximumHeight(target_container_h)
+        
+        # [Task] 实时更新浮动按钮位置
+        self._update_voice_btn_pos()
+
+    def _update_voice_btn_pos(self):
+        """Position the floating voice button to align with the bar's end"""
+        if not hasattr(self, 'voice_btn'): return
+        s = self.window_scale
+        # Align with container's right side, minus a bit of margin
+        x = self.container.x() + self.container.width() - int(65 * s)
+        # Vertically center relative to container
+        y = self.container.y() + (self.container.height() - self.voice_btn.height()) // 2
+        self.voice_btn.move(x, y)
+        self.voice_btn.raise_()
 
     def update_segment(self, text):
         # 如果正在进行动画，且现在有真正文本输入，强制停止动画

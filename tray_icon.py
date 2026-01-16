@@ -3,6 +3,8 @@ from PyQt6.QtWidgets import QSystemTrayIcon
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtGui import QIcon
 
+from locales import t # [New]
+
 class TraySignals(QObject):
     restartRequested = pyqtSignal()
     openSettingsRequested = pyqtSignal()
@@ -14,7 +16,7 @@ class AppTrayIcon(QSystemTrayIcon):
         logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
         super().__init__(QIcon(logo_path), parent)
         self.signals = TraySignals() # Keep for compatibility if needed, though mostly unused now
-        self.setToolTip("中日说")
+        self.setToolTip(t("app_name"))
         self.show()
 
     def set_mode_checked(self, mode_id):

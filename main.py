@@ -5,7 +5,7 @@ from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer
 from model_config import get_model_config, ASROutputMode, TranslatorEngineType
 from asr_manager import ASRManager
 from asr_mode import ASRModeWindow
-from asr_jp_mode import ASRJpModeWindow
+# from asr_jp_mode import ASRJpModeWindow # [Task] 以后恢复时取消注释
 from ui_manager import TranslatorWindow, FloatingVoiceIndicator
 from hotkey_manager import HotkeyManager
 from tray_icon import AppTrayIcon
@@ -44,15 +44,15 @@ class AppController(QObject):
         
         # Create ONLY the active window first for instant feedback
         self.asr_window = None
-        self.asr_jp_window = None
+        # self.asr_jp_window = None
         self.tr_window = None
         
         if self.app_mode == "asr":
             self.asr_window = ASRModeWindow()
             self.window = self.asr_window
-        elif self.app_mode == "asr_jp":
-            self.asr_jp_window = ASRJpModeWindow()
-            self.window = self.asr_jp_window
+        # elif self.app_mode == "asr_jp":
+        #    self.asr_jp_window = ASRJpModeWindow()
+        #    self.window = self.asr_jp_window
         else:
             self.tr_window = TranslatorWindow()
             self.window = self.tr_window
@@ -86,9 +86,9 @@ class AppController(QObject):
 
         # Create windows that weren't created yet
         if not self.asr_window: self.asr_window = ASRModeWindow()
-        if not self.asr_jp_window: self.asr_jp_window = ASRJpModeWindow()
+        # if not self.asr_jp_window: self.asr_jp_window = ASRJpModeWindow()
         if not self.tr_window: self.tr_window = TranslatorWindow()
-        self.all_windows = [self.asr_window, self.asr_jp_window, self.tr_window]
+        self.all_windows = [self.asr_window, self.tr_window] # [Task] Remove asr_jp_window
 
         # 4. Hotkey Manager (Start after UI is shown)
         self.hotkey_mgr = HotkeyManager(
@@ -235,10 +235,11 @@ class AppController(QObject):
 
     def _get_active_window(self):
         if self.app_mode == "asr": return self.asr_window
-        if self.app_mode == "asr_jp": return self.asr_jp_window
+        # if self.app_mode == "asr_jp": return self.asr_jp_window
         return self.tr_window
 
     def handle_mode_change(self, mode_id):
+        if mode_id == "asr_jp": mode_id = "asr" # [Task] 强制回退，防止配置残留导致崩溃
         self.app_mode = mode_id
         for win in self.all_windows: win.hide()
         self.window = self._get_active_window()
@@ -307,14 +308,13 @@ class AppController(QObject):
         self.window.update_segment(result)
         if self.app_mode == "asr":
              self.handle_send_request(result)
-        elif self.app_mode == "asr_jp":
-             self.handle_translation_request(result)
+        # elif self.app_mode == "asr_jp":
+        #      self.handle_translation_request(result)
         elif self.app_mode == "translation":
              # 标记当前翻译是由 ASR 触发的，翻译完成后需要自动粘贴
              self._is_asr_triggered_translation = True
-             # 注意：translation 模式下 UI 已经通过信号监听了文本变化并触发翻译
-             # 所以这里不需要手动调用 handle_translation_request，除非 debounce 太长
-             # 但为了稳妥，我们可以直接触发翻译以提高即时性
+             # UI 已通过 set_zh_text 更新文本，set_zh_text 会通过信号连接触发带 debounce 的翻译
+             # 为了极致速度，我们这里直接调用，但需要在 UI 侧处理好防止重复提交
              self.handle_translation_request(result)
 
     def on_translation_started(self):
@@ -342,9 +342,9 @@ class AppController(QObject):
             if getattr(self, '_is_asr_triggered_translation', False):
                 self._is_asr_triggered_translation = False
                 self.sys_handler.paste_text(text, should_send=False)
-        elif self.app_mode == "asr_jp":
-            self.asr_jp_window.update_segment(text)
-            self.handle_send_request(text)
+        # elif self.app_mode == "asr_jp":
+        #    self.asr_jp_window.update_segment(text)
+        #    self.handle_send_request(text)
             
         # TTS 逻辑：每次收到新翻译都打断之前的朗读，重新开始计时
         # 只有停止输入一段时间后才朗读最终结果
@@ -658,6 +658,7 @@ class AppController(QObject):
             if hasattr(win, "change_theme"): win.change_theme(theme)
             if hasattr(win, "set_scale_factor"): win.set_scale_factor(scale)
             if hasattr(win, "set_font_name"): win.set_font_name(font)
+            if hasattr(win, "refresh_idle_texts"): win.refresh_idle_texts()
 
         self._last_engine_id = self.m_cfg.current_translator_engine
 

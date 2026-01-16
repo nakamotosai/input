@@ -6,6 +6,7 @@ import requests
 import json
 from packaging import version
 from PyQt6.QtWidgets import QMessageBox
+from locales import t # [New]
 
 class UpdateManager:
     CURRENT_VERSION = "1.0.0"
@@ -28,27 +29,27 @@ class UpdateManager:
                 if version.parse(latest_version) > version.parse(cls.CURRENT_VERSION):
                     cls.show_update_dialog(data, parent)
                 elif not silent:
-                    QMessageBox.information(parent, "检查更新", "当前已是最新版本！")
+                    QMessageBox.information(parent, t("update_title"), t("update_latest"))
         except Exception as e:
             print(f"[UpdateManager] 检查更新失败: {e}")
             if not silent:
-                QMessageBox.warning(parent, "检查更新", f"检查更新失败: {e}")
+                QMessageBox.warning(parent, t("update_title"), f"{t('update_error')}: {e}")
 
     @classmethod
     def show_update_dialog(cls, data, parent=None):
         """显示更新提示对话框"""
         msg = QMessageBox(parent)
-        msg.setWindowTitle("发现新版本")
+        msg.setWindowTitle(t("update_new_version"))
         msg.setIcon(QMessageBox.Icon.Information)
         
-        text = f"发现新版本: {data['latest_version']}\n"
-        text += f"发布日期: {data['release_date']}\n\n"
-        text += f"更新内容:\n{data['changelog']}\n\n"
-        text += "是否前往下载？"
+        text = f"{t('update_new_version')}: {data['latest_version']}\n"
+        text += f"{t('update_release_date')}: {data['release_date']}\n\n"
+        text += f"{t('update_changelog')}:\n{data['changelog']}\n\n"
+        text += t("update_ask_download")
         
         msg.setText(text)
-        btn_download = msg.addButton("立即下载", QMessageBox.ButtonRole.AcceptRole)
-        msg.addButton("稍后再说", QMessageBox.ButtonRole.RejectRole)
+        btn_download = msg.addButton(t("update_btn_download"), QMessageBox.ButtonRole.AcceptRole)
+        msg.addButton(t("update_btn_later"), QMessageBox.ButtonRole.RejectRole)
         
         msg.exec()
         
